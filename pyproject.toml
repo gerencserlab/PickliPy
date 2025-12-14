@@ -1,0 +1,15 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "PickliPy"
+version = "0.1.0"
+description = "Picklist generation for Echo 650 and Plate:Works"
+requires-python = ">=3.9"
+dependencies = [
+    "openpyxl",
+]
+
+[tool.setuptools]
+packages = ["PickliPy"]
