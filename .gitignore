@@ -1,1 +1,6 @@
 *.backup
+*.zip
+*.xml
+*.xlsx
+__pycache__/*
+
