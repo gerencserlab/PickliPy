@@ -9,7 +9,13 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import openpyxl
 
-from common import (
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message="Data Validation extension is not supported",
+)
+
+from .common import (
     PLATE_COLS_384,
     PLATE_ROWS_384,
     PicklyPyConfigError,

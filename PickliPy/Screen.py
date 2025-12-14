@@ -8,6 +8,12 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 import openpyxl
 
+import warnings
+warnings.filterwarnings(
+    "ignore",
+    message="Data Validation extension is not supported",
+)
+
 from .common import (
     PLATE_COLS_384,
     PLATE_ROWS_384,
@@ -28,6 +34,7 @@ from .common import (
     split_labels,
     tally_ordered,
     write_text,
+    well_name
 )
 
 
@@ -39,8 +46,6 @@ class _ScreenHeader:
     inventory_dst_rack: int
     process_src_name: str
     process_dst_name: str
-    loop_src_name: str
-    loop_dst_name: str
     picklist_name: str
     barcodes_dst: List[str]
     well_volume_ul: float
@@ -110,7 +115,7 @@ def _load_design_sheets(xlsx_path: Path) -> Tuple[List[List[Any]], List[List[Any
 def _parse_header(dst: List[List[Any]], src: List[List[Any]]) -> _ScreenHeader:
     # Wolfram: header = Map[#[[1]]->#[[2]]&, dst[[1;;12,{1,2}]]]
     header_map: Dict[str, Any] = {}
-    for r in range(min(12, len(dst))):
+    for r in range(len(dst)):
         key = as_str(dst[r][0]) if len(dst[r]) > 0 else ""
         val = dst[r][1] if len(dst[r]) > 1 else ""
         if key != "":
@@ -141,8 +146,6 @@ def _parse_header(dst: List[List[Any]], src: List[List[Any]]) -> _ScreenHeader:
     rack_dst = _get_int("Inventory_DST_Rack#:", 2)
     process_src = _get_str("Process_SRC:", "Process")
     process_dst = _get_str("Process_DST:", "Process")
-    loop_src = _get_str("Loop Counts_SRC:", inventory_src)
-    loop_dst = _get_str("Loop Counts_DST:", inventory_dst)
 
     picklist_name = _get_str("Picklist Name:", "picklist")
     barcodes_dst_raw = _get_str("Barcode_DST:", "PlateDST")
@@ -173,8 +176,6 @@ def _parse_header(dst: List[List[Any]], src: List[List[Any]]) -> _ScreenHeader:
         inventory_dst_rack=rack_dst,
         process_src_name=process_src,
         process_dst_name=process_dst,
-        loop_src_name=loop_src,
-        loop_dst_name=loop_dst,
         picklist_name=picklist_name,
         barcodes_dst=barcodes_dst,
         well_volume_ul=float(wellvol),
@@ -215,7 +216,7 @@ def _plate_map_pairs_from_grid(grid: List[List[str]]) -> List[Tuple[str, str]]:
             cell = grid[r][c]
             if cell.strip() == "":
                 continue
-            dstwell = f"{chr(ord('A') + r)}{c + 1}"
+            dstwell = well_name(r+1,c+1)
             pairs.append((dstwell, cell))
     return pairs
 
@@ -253,7 +254,7 @@ def _parse_blacklist(blk: Optional[List[List[Any]]]) -> Optional[_Blacklist]:
             g = groups_grid[r][c].strip()
             if g == "":
                 continue
-            well = f"{chr(ord('A') + r)}{c + 1}"
+            well = well_name(r+1,c+1)
             groups_by_label.setdefault(g, []).append(well)
             label_by_well[well] = g
 
@@ -288,10 +289,8 @@ def _round_dispense_nl(desired_nl: float) -> float:
 
 
 def generate_screening_picklist(
-    xlsx_path: str | Path,
-    *,
-    export_loop_files: bool = False,
-) -> None:
+    xlsx_path: str | Path
+    ) -> None:
     """Generate screening picklists and metadata files.
 
     This function mirrors `screeningpicklist.wls` behavior.
@@ -910,17 +909,6 @@ def generate_screening_picklist(
     print(f"Saving: {proc_src_path}")
     print(f"Saving: {proc_dst_path}")
 
-    # Optional loop count files
-    if export_loop_files:
-        loop_src_counts = tally_ordered(loopsrc)
-        loop_dst_counts = tally_ordered(loopdst)
-        loop_src_path = out_dir / f"{header.loop_src_name}.csv"
-        loop_dst_path = out_dir / f"{header.loop_dst_name}.csv"
-        write_text(loop_src_path, format_csv_rows([[b, c] for b, c in loop_src_counts]))
-        write_text(loop_dst_path, format_csv_rows([[b, c] for b, c in loop_dst_counts]))
-        print(f"Saving: {loop_src_path}")
-        print(f"Saving: {loop_dst_path}")
-
     # Table merge
     merge_path = out_dir / "table merge.txt"
     merge_lines = []
@@ -985,11 +973,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         description="PicklyPy.Screen - generate screening picklists from SRC/DST/LIB worksheets"
     )
     parser.add_argument("xlsx", help="Path to the design Excel file")
-    parser.add_argument(
-        "--export-loop-files",
-        action="store_true",
-        help="Also export Loop Counts SRC/DST CSVs (disabled by default, matches WL script comments).",
-    )
+
     parser.add_argument(
         "--no-pause",
         action="store_true",
@@ -1001,9 +985,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .common import run_with_user_facing_errors
 
     return run_with_user_facing_errors(
-        lambda: generate_screening_picklist(args.xlsx, export_loop_files=args.export_loop_files),
+        lambda: generate_screening_picklist(args.xlsx),
         pause_on_exit=not args.no_pause,
     )
+
+    
 
 
 if __name__ == "__main__":
