@@ -421,8 +421,8 @@ class SurveyVolumes:
     volumes_ul: Mapping[Tuple[str, str], float]
     unknown_barcodes: Tuple[Path, ...] = ()
 
-    def get(self, barcode: str, well: str, default: float = 0.0) -> float:
-        return float(self.volumes_ul.get((barcode, well), default))
+    def get(self, barcode: str, well: str) -> Any:
+        return self.volumes_ul.get((barcode, well), None)
 
 
 def parse_plate_survey_xml(path: Path) -> Tuple[Optional[str], Dict[Tuple[str, str], float]]:

@@ -3,4 +3,7 @@
 *.xml
 *.xlsx
 __pycache__/*
+*.txt
+*bak
+*.csv
 

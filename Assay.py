@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import openpyxl
 
-from .common import (
+from common import (
     PLATE_COLS_384,
     PLATE_ROWS_384,
     PicklyPyConfigError,
@@ -31,6 +31,7 @@ from .common import (
     sheet_to_matrix,
     split_labels,
     write_text,
+    well_name
 )
 
 
@@ -98,7 +99,7 @@ def _extract_plate_grid(dst: List[List[Any]], label_row: int) -> List[List[str]]
     start_r = label_row + 1
     end_r = start_r + PLATE_ROWS_384
     if end_r > len(dst):
-        raise PicklyPyConfigError("DST worksheet does not contain a full 16-row plate map.")
+        raise PicklyPyConfigError(f"DST worksheet does not contain a full {PLATE_ROWS_384}-row plate map.")
     grid: List[List[str]] = []
     for r in range(start_r, end_r):
         row = dst[r]
@@ -343,9 +344,9 @@ def _apply_survey_to_src(
         well = as_str(row[0]).strip()
         if plate == "" or well == "":
             continue
-        vol = survey.get(plate, well, default=None)
+        vol = survey.get(plate, well)
         if vol is None and unknown_mapped_to == plate:
-            vol = survey.get("UnknownBarCode", well, default=None)
+            vol = survey.get("UnknownBarCode", well)
         if vol is None:
             missing_any = True
             vol = 0.0
@@ -436,44 +437,27 @@ def _dilute_error_check(
     warnings_flag: List[bool],
 ) -> None:
     desired_nl = 1000.0 * float(well_volume_ul) * float(final) / float(stock)
-    # If desired_nl is 0 (e.g. final concentration is 0), we still want to
-    # abort because the Echo cannot execute 0 nL transfers. The original
-    # Wolfram script aborts when the rounded volume is 0.
+    comp_name = src_name_map.get(src_well_example, src_well_example)
+
+    # Warn on significant rounding error (matches WL assay script logic).
     if desired_nl != 0:
-        rel_err = abs(desired_nl - rounded_nl) / desired_nl
+        rel_err = abs(desired_nl - float(rounded_nl)) / abs(desired_nl)
         if rel_err > 0.1:
-            comp_name = src_name_map.get(src_well_example, src_well_example)
             print(
-                "Warning: Significant rounding error at label for compound: ",
-                comp_name,
-                "desired nL=",
-                desired_nl,
-                "rounded to ",
-                rounded_nl,
-                "(nL)",
+                "Warning: Significant rounding error at low volume dispensing! "
+                f"Compound: {comp_name} Stock: {stock} Final: {final} "
+                f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
             )
             warnings_flag[0] = True
-    # Handle invalid / zero transfers.
-    if rounded_nl == 0:
-        comp_name = src_name_map.get(src_well_example, src_well_example)
-        raise PicklyPyConfigError(
-            "ERROR: addition volume was rounded to zero! For compound: "
-            f"{comp_name} (source plate {src_plate})"
-        )
-        comp_name = src_name_map.get(src_well_example, src_well_example)
-        print(
-            "Warning: Significant rounding error at low volume dispensing! "
-            f"Compound: {comp_name} Stock: {stock} Final: {final} "
-            f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
-        )
-        warnings_flag[0] = True
-    if rounded_nl == 0:
-        comp_name = src_name_map.get(src_well_example, src_well_example)
+
+    # Abort on zero-volume transfers (Echo cannot execute 0 nL dispenses).
+    if float(rounded_nl) == 0.0:
         raise PicklyPyConfigError(
             "Error: Zero-volume dispensing! "
-            f"Compound: {comp_name} Stock: {stock} Final: {final} "
+            f"Compound: {comp_name} (source plate {src_plate}) Stock: {stock} Final: {final} "
             f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
         )
+
 
 
 def _choose_source_well(
@@ -637,7 +621,7 @@ def generate_assay_picklists(xlsx_path: str | Path, *, pause_on_exit: bool = Fal
                 cell = plate_map_grid[r][c]
                 if cell.strip() == "":
                     continue
-                dstwell = f"{chr(ord('A') + r)}{c+1}"  # keep single-letter like WL
+                dstwell = well_name(r+1,c+1)
                 for lab in split_labels(cell):
                     c_pairs.append((dstwell, lab))
 
@@ -660,7 +644,7 @@ def generate_assay_picklists(xlsx_path: str | Path, *, pause_on_exit: bool = Fal
                     if num is None:
                         continue
                     if float(num) > 0:
-                        dstwell = f"{chr(ord('A') + r)}{c+1}"
+                        dstwell = well_name(r+1,c+1)
                         conc_map[dstwell] = float(num)
 
         # Prepare label list decoding.
@@ -904,7 +888,7 @@ def generate_assay_picklists(xlsx_path: str | Path, *, pause_on_exit: bool = Fal
                 v = table[r][c]
                 if v == "":
                     continue
-                rows.append([f"{chr(ord('A') + r)}{c+1}", plate, v])
+                rows.append([well_name(r+1,c+1), plate, v])
         return rows
 
     merge_labels_rows: List[List[str]] = []
@@ -930,7 +914,7 @@ def generate_assay_picklists(xlsx_path: str | Path, *, pause_on_exit: bool = Fal
         comp_name = items[0][0]
         used_total = sum(x[2] for x in items)
         remains = volumes_ul.get(key, 0.0)
-        print(f"{comp_name}\t\t{key}\t{used_total}\tremains (ul): {remains}")
+        print(f"{comp_name}\t\t{key}\t{used_total:.2f}\tremains (ul): {remains:.2f}")
 
     if warnings[0]:
         print("Finished with warnings. Revise source file if needed!")
@@ -969,13 +953,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     parser = argparse.ArgumentParser(prog="PicklyPy.Assay", description="Generate assay picklists from an Excel design file.")
     parser.add_argument("xlsx", help="Path to the design .xlsx file")
-    parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
+    #parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     # Mimic the original Wolfram script's behavior: pause at the end unless the
     # user explicitly opts out.
-    return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=not args.no_pause)
+    #return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=not args.no_pause)
+    return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=False)
 
 
 if __name__ == "__main__":
