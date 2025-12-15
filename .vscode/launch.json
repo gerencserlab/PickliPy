@@ -20,8 +20,6 @@
 			"request": "launch",
 			"module": "PickliPy.Bluetable",
 			"args": [
-                "--tables-out",
-				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\4_Bluetable\\PY\\outs",
 				"picklisttest",
 				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\4_Bluetable\\PY\\blue tables inventory.xlsx",
 				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\4_Bluetable\\PY\\bluetables"
