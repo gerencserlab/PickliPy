@@ -959,14 +959,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     parser = argparse.ArgumentParser(prog="PicklyPy.Assay", description="Generate assay picklists from an Excel design file.")
     parser.add_argument("xlsx", help="Path to the design .xlsx file")
-    #parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
+    parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     # Mimic the original Wolfram script's behavior: pause at the end unless the
     # user explicitly opts out.
-    #return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=not args.no_pause)
-    return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=False)
+    return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=not args.no_pause)
+
 
 
 if __name__ == "__main__":
