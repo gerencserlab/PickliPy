@@ -61,7 +61,7 @@ The compound library must be an Excel file (`.xlsx`) with the following structur
 ### Sheet Naming
 Each sheet must be named **exactly** matching the plate barcode. For example:
 - Plate barcode `M1001` → Sheet name `M1001`
-- Plate barcode `LOPAC_001` → Sheet name `LOPAC_001`
+- Plate barcode `M2001` → Sheet name `M2001`
 
 ### Required Columns
 
@@ -83,10 +83,6 @@ A sheet named `M1001` might look like:
 
 | Plate Barcode | RACKPOS | Compound | Concentration | Notes |
 |---------------|---------|----------|---------------|-------|
-| M1001 | A1 | DMSO | - | Vehicle control |
-| M1001 | A2 | Rotenone | 10mM | Complex I inhibitor |
-| M1001 | A3 | Antimycin A | 10mM | Complex III inhibitor |
-| M1001 | B1 | FCCP | 10mM | Uncoupler |
 | M1001 | B2 | Oligomycin | 10mM | ATP synthase inhibitor |
 | ... | ... | ... | ... | ... |
 
