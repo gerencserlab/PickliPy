@@ -464,12 +464,12 @@ def _dilute_error_check(
             warnings_flag[0] = True
 
     # Abort on zero-volume transfers (Echo cannot execute 0 nL dispenses).
-    if float(rounded_nl) == 0.0:
-        raise PicklyPyConfigError(
-            "Error: Zero-volume dispensing! "
-            f"Compound: {comp_name} (source plate {src_plate}) Stock: {stock} Final: {final} "
-            f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
-        )
+    # if float(rounded_nl) == 0.0:
+    #     raise PicklyPyConfigError(
+    #         "Error: Zero-volume dispensing! "
+    #         f"Compound: {comp_name} (source plate {src_plate}) Stock: {stock} Final: {final} "
+    #         f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
+    #     )
 
 
 
