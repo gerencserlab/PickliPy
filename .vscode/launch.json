@@ -4,7 +4,17 @@
 	// For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
 	"version": "0.2.0",
 	"configurations": [
+		{
+			"name": "Assay",
+			"type": "debugpy",
+			"request": "launch",
+			"module": "PickliPy.Assay",
+			"args": [
+                "C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\2_Power\\PY - randomize\\251113_PBMC Power.xlsx",
+				"--randomize-wells"
 
+            ]
+		},
 		{
 			"name": "Screen",
 			"type": "debugpy",

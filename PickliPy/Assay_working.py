@@ -40,16 +40,9 @@ from .common import (
     well_name
 )
 
-from .randomization import (
-    apply_well_map_to_str_grid,
-    apply_well_map_to_well_dict,
-    optimize_plate_well_map,
-    seed_from_text,
-)
 
-
-VERSION = "4.18-python"
-SOURCE_WLS_VERSION = "4.18  12/18/2025"
+VERSION = "4.17-python"
+SOURCE_WLS_VERSION = "4.17  12/14/2025"
 
 
 @dataclass
@@ -511,96 +504,7 @@ def _update_table_join(existing: List[List[str]], new: List[List[str]]) -> List[
     return out
 
 
-def _build_treatment_signatures_for_randomization(
-    *,
-    dst_sheet: List[List[Any]],
-    additions: List[Addition],
-    all_dst_barcodes: List[str],
-    compoundlabels: List[Dict[str, str]],
-) -> Dict[str, Dict[str, str]]:
-    """Build per-plate per-well treatment signatures (dispenses only).
-
-    This is used to compute replicate groups for well randomization.
-
-    Notes
-    -----
-    - Signatures intentionally exclude the Layout map (if present) so that
-      unused wells (no dispenses) remain unused after randomization.
-    - In dose-response mode (Conc. map present) the per-well concentration
-      is included in the signature so different doses are not considered
-      replicates.
-    """
-
-    treatments_by_plate: Dict[str, Dict[str, str]] = {b: {} for b in all_dst_barcodes}
-
-    for add in additions:
-        plate_map_grid = _extract_plate_grid(dst_sheet, add.plate_map_row)
-        if _is_grid_empty(plate_map_grid):
-            continue
-
-        dosing = add.conc_map_row is not None
-        conc_map: Dict[str, float] = {}
-        if dosing:
-            conc_grid = _extract_plate_grid(dst_sheet, add.conc_map_row)
-            for r in range(PLATE_ROWS_384):
-                for c in range(PLATE_COLS_384):
-                    num = as_number(conc_grid[r][c])
-                    if num is None:
-                        continue
-                    if float(num) > 0:
-                        conc_map[well_name(r + 1, c + 1)] = float(num)
-
-        # Dose-response: label -> compound name (first occurrence).
-        label_to_comp: Dict[str, str] = {}
-        if dosing:
-            for row in add.label_rows:
-                lbl = as_str(row[0]).strip() if len(row) > 0 else ""
-                comp = as_str(row[1]).strip() if len(row) > 1 else ""
-                if lbl and comp and lbl not in label_to_comp:
-                    label_to_comp[lbl] = comp
-
-        dst_barcodes = all_dst_barcodes if add.barcodes_dst == ["*"] else add.barcodes_dst
-
-        for r in range(PLATE_ROWS_384):
-            for c in range(PLATE_COLS_384):
-                cell = plate_map_grid[r][c]
-                if cell.strip() == "":
-                    continue
-                w = well_name(r + 1, c + 1)
-
-                if dosing and w not in conc_map:
-                    # No dose specified -> no dispense.
-                    continue
-
-                labs = split_labels(cell)
-                if not labs:
-                    continue
-
-                if dosing:
-                    conc_final = conc_map[w]
-                    conc_str = as_str(integer_chop(float(conc_final)))
-                    parts = [f"{label_to_comp.get(lab, lab)}_{conc_str}" for lab in labs]
-                    sig = "+".join(parts)
-                else:
-                    parts = [compoundlabels[add.index].get(lab, lab) for lab in labs]
-                    sig = "+".join(parts)
-
-                if sig.strip() == "":
-                    continue
-
-                for bc in dst_barcodes:
-                    prev = treatments_by_plate[bc].get(w, "")
-                    treatments_by_plate[bc][w] = prev + (";" if prev else "") + sig
-
-    return treatments_by_plate
-
-
-def generate_assay_picklists(
-    xlsx_path: str | Path,
-    *,
-    pause_on_exit: bool = False,
-    randomize_wells: bool = False,
-) -> None:
+def generate_assay_picklists(xlsx_path: str | Path, *, pause_on_exit: bool = False) -> None:
     """Main API: generate assay picklists and Plate:Works sidecar files."""
     _print_banner()
 
@@ -687,50 +591,10 @@ def generate_assay_picklists(
 
     # Layout map (optional).
     layout_rows = _find_rows_with_label(dst, "Layout:")
-    layout_grid: Optional[List[List[str]]] = None
     base_conditions = [["" for _ in range(PLATE_COLS_384)] for _ in range(PLATE_ROWS_384)]
     if layout_rows:
         layout_grid = _extract_plate_grid(dst, layout_rows[0])
         base_conditions = _update_table_join(base_conditions, layout_grid)
-
-    # Layout label by well (used for group-wise randomization).
-    layout_by_well: Dict[str, str] = {}
-    if layout_grid is not None:
-        for r in range(PLATE_ROWS_384):
-            for c in range(PLATE_COLS_384):
-                layout_by_well[well_name(r + 1, c + 1)] = layout_grid[r][c].strip()
-
-    # Optional: destination-well randomization (per destination barcode).
-    randomization_maps: Dict[str, Dict[str, str]] = {}
-    if randomize_wells:
-        print("****** Well randomization enabled (per destination plate barcode) ******")
-        treatments_by_plate = _build_treatment_signatures_for_randomization(
-            dst_sheet=dst,
-            additions=additions,
-            all_dst_barcodes=all_dst_barcodes,
-            compoundlabels=compoundlabels,
-        )
-
-        for bc in all_dst_barcodes:
-            seed = seed_from_text(f"{xlsx_path.name}|{bc}")
-            try:
-                randomization_maps[bc] = optimize_plate_well_map(
-                    treatment_by_well=treatments_by_plate.get(bc, {}),
-                    layout_by_well=layout_by_well if layout_by_well else None,
-                    seed=seed,
-                    attempts=100,
-                    forbid_adjacent_replicates=True,
-                )
-            except ValueError as e:
-                raise PicklyPyConfigError(
-                    f"Well randomization failed for destination plate {bc}: {e}"
-                ) from e
-
-        # Brief summary.
-        for bc in all_dst_barcodes:
-            n_used = len(treatments_by_plate.get(bc, {}))
-            n_mapped = len(randomization_maps.get(bc, {}))
-            print(f"Randomization map for {bc}: {n_mapped} wells mapped ({n_used} used wells).")
 
     # Per destination plate accumulated conditions.
     allplates_labels: Dict[str, List[List[str]]] = {b: copy.deepcopy(base_conditions) for b in all_dst_barcodes}
@@ -825,58 +689,38 @@ def generate_assay_picklists(
         else:
             csv_accum = []
 
-        # Barcode-independent plate map of compound labels for this addition (used for metadata).
-        # If destination well randomization is enabled, this grid will be permuted per destination barcode.
-        platemap_with_compounds_base: List[List[str]] = []
-        for r in range(PLATE_ROWS_384):
-            row_out: List[str] = []
-            for c in range(PLATE_COLS_384):
-                cell = plate_map_grid[r][c]
-                if cell.strip() == "":
-                    row_out.append("")
-                    continue
-                parts: List[str] = []
-                for lab in split_labels(cell):
-                    parts.append(compoundlabels[add.index].get(lab, lab))
-                row_out.append("+".join(parts))
-            platemap_with_compounds_base.append(row_out)
-
         # For each destination plate barcode, generate dispenses.
         for dst_barcode in dst_barcodes:
             print(f"Dispensing from: {add.barcode_src}")
             print(f"Dispensing into: {dst_barcode}")
 
-            # Destination-well randomization (per destination barcode): map original well -> randomized well.
-            well_map = randomization_maps.get(dst_barcode, {}) if randomize_wells else {}
+            # Update conditions maps for this destination plate.
+            platemap_with_compounds: List[List[str]] = []
+            for r in range(PLATE_ROWS_384):
+                row_out: List[str] = []
+                for c in range(PLATE_COLS_384):
+                    cell = plate_map_grid[r][c]
+                    if cell.strip() == "":
+                        row_out.append("")
+                        continue
+                    parts = []
+                    for lab in split_labels(cell):
+                        parts.append(compoundlabels[add.index].get(lab, lab))
+                    row_out.append("+".join(parts))
+                platemap_with_compounds.append(row_out)
 
-            # Update conditions maps for this destination plate (apply randomization to the plate maps).
-            plate_map_grid_use = apply_well_map_to_str_grid(plate_map_grid, well_map) if well_map else plate_map_grid
-            platemap_with_compounds_use = (
-                apply_well_map_to_str_grid(platemap_with_compounds_base, well_map)
-                if well_map
-                else platemap_with_compounds_base
-            )
-
-            allplates_labels[dst_barcode] = _update_table_join(allplates_labels[dst_barcode], plate_map_grid_use)
+            allplates_labels[dst_barcode] = _update_table_join(allplates_labels[dst_barcode], plate_map_grid)
             allplates_compounds[dst_barcode] = _update_table_join(
-                allplates_compounds[dst_barcode], platemap_with_compounds_use
+                allplates_compounds[dst_barcode], platemap_with_compounds
             )
-
-            # Also apply randomization to dispensing targets (before the greedy travel optimization).
-            c_pairs_use = (
-                [(well_map.get(dstwell, dstwell), lab) for (dstwell, lab) in c_pairs]
-                if well_map
-                else c_pairs
-            )
-            conc_map_use = apply_well_map_to_well_dict(conc_map, well_map) if (dosing and well_map) else conc_map
 
             # Expand dispensing events.
             events: List[Tuple[str, List[str], float]] = []  # (dstwell, candidate_src_wells, vol_nl)
             if dosing:
-                for dstwell, lab in c_pairs_use:
-                    if dstwell not in conc_map_use:
+                for dstwell, lab in c_pairs:
+                    if dstwell not in conc_map:
                         continue
-                    conc_final = conc_map_use[dstwell]
+                    conc_final = conc_map[dstwell]
                     if lab not in label_defs:
                         continue
                     src_wells, stock, _ignored = label_defs[lab][0]
@@ -893,7 +737,7 @@ def generate_assay_picklists(
                     )
                     events.append((dstwell, src_wells, vol_nl))
             else:
-                for dstwell, lab in c_pairs_use:
+                for dstwell, lab in c_pairs:
                     for (src_wells, stock, final_conc) in label_defs.get(lab, []):
                         if final_conc == 0:
                             # A 0 concentration entry would produce 0 volume; WL would error.
@@ -1042,21 +886,6 @@ def generate_assay_picklists(
         write_text(out_labels, "\n".join(labels_flat))
         write_text(out_comps, "\n".join(comps_flat))
 
-    # Plate-map exports (grid format), similar to PicklyPy.Screen.
-    def _write_plate_maps(path: Path, tables: Dict[str, List[List[str]]]) -> None:
-        lines: List[str] = []
-        for plate in all_dst_barcodes:
-            lines.append(plate)
-            tbl = tables[plate]
-            for r in range(PLATE_ROWS_384):
-                lines.append("\t".join(tbl[r][c] for c in range(PLATE_COLS_384)))
-        write_text(path, "\n".join(lines))
-
-    platemap_labels_path = xlsx_path.with_name(f"{xlsx_path.name}_plate map labels.txt")
-    platemap_compounds_path = xlsx_path.with_name(f"{xlsx_path.name}_plate map compounds.txt")
-    _write_plate_maps(platemap_labels_path, allplates_labels)
-    _write_plate_maps(platemap_compounds_path, allplates_compounds)
-
     # Merge tables
     def _merge_rows(table: List[List[str]], plate: str) -> List[List[str]]:
         rows: List[List[str]] = []
@@ -1131,24 +960,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(prog="PicklyPy.Assay", description="Generate assay picklists from an Excel design file.")
     parser.add_argument("xlsx", help="Path to the design .xlsx file")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
-    parser.add_argument(
-        "--randomize-wells",
-        action="store_true",
-        help=(
-            "Randomize destination well positions (treatments are shuffled, the set of used wells is unchanged). "
-            "Randomization is applied independently for each destination plate barcode. If a Layout: map is present "
-            "in the DST worksheet, shuffling is performed independently within each layout label group."
-        ),
-    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     # Mimic the original Wolfram script's behavior: pause at the end unless the
     # user explicitly opts out.
-    return run_with_user_facing_errors(
-        lambda: generate_assay_picklists(args.xlsx, randomize_wells=args.randomize_wells),
-        pause_on_exit=not args.no_pause,
-    )
+    return run_with_user_facing_errors(lambda: generate_assay_picklists(args.xlsx), pause_on_exit=not args.no_pause)
 
 
 
