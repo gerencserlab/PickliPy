@@ -1127,18 +1127,34 @@ def _save_updated_workbook(
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
+    
+    def _str2bool(v: object) -> bool:
+        # Accept common boolean spellings; require an explicit value.
+        if isinstance(v, bool):
+            return v
+        s = str(v).strip().lower()
+        if s in {"true", "t", "1", "yes", "y"}:
+            return True
+        if s in {"false", "f", "0", "no", "n"}:
+            return False
+        raise argparse.ArgumentTypeError(
+            "Expected a boolean value for --randomize-wells (true/false)."
+        )
 
     parser = argparse.ArgumentParser(prog="PicklyPy.Assay", description="Generate assay picklists from an Excel design file.")
-    parser.add_argument("xlsx", help="Path to the design .xlsx file")
+    parser.add_argument("-f", "--file", dest="xlsx", required=True, help="Path to the design .xlsx file")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
     parser.add_argument(
-        "--randomize-wells",
-        action="store_true",
+        "-r","--randomize-wells",
+        dest="randomize_wells",
+        type=_str2bool,
+        default=False,
+        metavar="{true|false}",
         help=(
             "Randomize destination well positions (treatments are shuffled, the set of used wells is unchanged). "
             "Randomization is applied independently for each destination plate barcode. If a Layout: map is present "
             "in the DST worksheet, shuffling is performed independently within each layout label group."
-        ),
+        )
     )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
