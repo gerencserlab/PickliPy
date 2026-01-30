@@ -48,8 +48,8 @@ from .randomization import (
 )
 
 
-VERSION = "4.18-python"
-SOURCE_WLS_VERSION = "4.18  12/18/2025"
+VERSION = "4.19-python"
+SOURCE_WLS_VERSION = "4.19  01/29/2026"
 
 
 @dataclass
@@ -92,7 +92,7 @@ def _print_banner() -> None:
         "a new plate map with the same picklist name."
     )
     print(
-        "Creates inventory and process files. Source plates go on Rack 1 from bottom up, destination plates go on Rack 2 from bottom up. "
+        "Creates inventory and process files."
         "Barcodes will come alphabetically."
     )
 
@@ -403,16 +403,33 @@ def _build_srcr(src: List[List[Any]]) -> Dict[str, Dict[str, Tuple[List[str], fl
     return srcr
 
 
-def _build_src_name_map(src: List[List[Any]]) -> Dict[str, Dict[str, str]]:
+def _build_src_name_map(src: List[List[Any]], name_col : bool = False) -> Dict[str, Dict[str, str]]:
     """plate_barcode -> (well -> compound_name)"""
     out: Dict[str, Dict[str, str]] = {}
     for row in src[1:]:
         plate = as_str(row[5]).strip()
         well = as_str(row[0]).strip()
-        comp = as_str(row[1]).strip()
+        if name_col:
+            comp = as_str(row[3]).strip()
+        else:
+            comp = as_str(row[1]).strip()
+            
         if plate == "" or well == "" or comp == "":
             continue
         out.setdefault(plate, {})[well] = comp
+    return out
+
+def _build_src_label_to_name_map(src: List[List[Any]]) -> Dict[str, Dict[str, str]]:
+    """plate_barcode -> (well -> compound_name)"""
+    out: Dict[str, Dict[str, str]] = {}
+    for row in src[1:]:
+        plate = as_str(row[5]).strip()
+        label = as_str(row[1]).strip()
+        comp = as_str(row[3]).strip()
+            
+        if plate == "" or label == "" or comp == "":
+            continue
+        out.setdefault(plate, {})[label] = comp
     return out
 
 
@@ -464,12 +481,12 @@ def _dilute_error_check(
             warnings_flag[0] = True
 
     # Abort on zero-volume transfers (Echo cannot execute 0 nL dispenses).
-    # if float(rounded_nl) == 0.0:
-    #     raise PicklyPyConfigError(
-    #         "Error: Zero-volume dispensing! "
-    #         f"Compound: {comp_name} (source plate {src_plate}) Stock: {stock} Final: {final} "
-    #         f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
-    #     )
+    if desired_nl != 0 and float(rounded_nl) == 0.0:
+        raise PicklyPyConfigError(
+            "Error: Zero-volume dispensing! "
+            f"Compound: {comp_name} (source plate {src_plate}) Stock: {stock} Final: {final} "
+            f"Desired dispense volume: {desired_nl} Possible dispense volume: {rounded_nl}"
+        )
 
 
 
@@ -600,6 +617,7 @@ def generate_assay_picklists(
     *,
     pause_on_exit: bool = False,
     randomize_wells: bool = False,
+    name_column: bool = False,
 ) -> None:
     """Main API: generate assay picklists and Plate:Works sidecar files."""
     _print_banner()
@@ -645,6 +663,10 @@ def generate_assay_picklists(
     # Build source mapping / name map / volumes.
     srcr = _build_srcr(src)
 
+    # Force library-style naming if PickliPy.Screen header is present
+    if src[0][3] == "Name in Library":
+        name_column = True
+
     # Ensure every source barcode referenced exists.
     for a in additions:
         if a.barcode_src not in srcr:
@@ -652,7 +674,12 @@ def generate_assay_picklists(
                 f"The {a.barcode_src} barcode does not exist in the SRC worksheet Col F!"
             )
 
-    src_name = _build_src_name_map(src)
+    src_name = _build_src_name_map(src,name_col = name_column)
+    if name_column:
+        src_label_to_name = _build_src_label_to_name_map(src)
+    else:
+        src_label_to_name = ()
+    
     volumes_ul = _build_volumes(src)
 
     # Validate label list compounds exist per addition.
@@ -675,7 +702,12 @@ def generate_assay_picklists(
         label_to_parts: Dict[str, List[str]] = {}
         for row in add.label_rows:
             lbl = as_str(row[0]).strip()
-            comp = as_str(row[1]).strip()
+            comp = as_str(row[1]).strip() 
+            
+            if name_column:
+                comp = src_label_to_name.get(add.barcode_src).get(comp,comp)
+
+                               
             conc = row[2] if len(row) > 2 else ""
             if lbl == "" or comp == "":
                 continue
@@ -703,7 +735,7 @@ def generate_assay_picklists(
     # Optional: destination-well randomization (per destination barcode).
     randomization_maps: Dict[str, Dict[str, str]] = {}
     if randomize_wells:
-        print("****** Well randomization enabled (per destination plate barcode) ******")
+        print("****** Well randomization enabled (per destination plate barcode) - this may take a minute - random seed is based on design file name ******")
         treatments_by_plate = _build_treatment_signatures_for_randomization(
             dst_sheet=dst,
             additions=additions,
@@ -1145,7 +1177,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument("-f", "--file", dest="xlsx", required=True, help="Path to the design .xlsx file")
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter at the end")
     parser.add_argument(
-        "-r","--randomize-wells",
+        "-r","--randomize_wells",
         dest="randomize_wells",
         type=_str2bool,
         default=False,
@@ -1156,13 +1188,25 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             "in the DST worksheet, shuffling is performed independently within each layout label group."
         )
     )
+    parser.add_argument(
+        "-n","--name_column",
+        dest="name_column",
+        type=_str2bool,
+        default=False,
+        metavar="{true|false}",
+        help=(
+            "Use compound names from column D (similary to PickliPy.Screen in metadata files."
+            "This allows using labels/slots instead of compound names in the label list of the DST sheet, and assign Compound names to these labels/slots in the SRC sheet."
+
+        )
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
 
     # Mimic the original Wolfram script's behavior: pause at the end unless the
     # user explicitly opts out.
     return run_with_user_facing_errors(
-        lambda: generate_assay_picklists(args.xlsx, randomize_wells=args.randomize_wells),
+        lambda: generate_assay_picklists(args.xlsx, randomize_wells=args.randomize_wells, name_column=args.name_column),
         pause_on_exit=not args.no_pause,
     )
 

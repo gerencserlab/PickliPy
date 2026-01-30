@@ -10,8 +10,12 @@
 			"request": "launch",
 			"module": "PickliPy.Assay",
 			"args": [
-                "C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\2_Power\\PY - randomize\\251113_PBMC Power.xlsx",
-				"--randomize-wells"
+                "-f",
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\5_Dose_repsponse_col_names\\randomize\\260129ChronicDR1-9-assay.xlsx",
+				"-n",
+				"True",
+				"-r",
+				"True"
 
             ]
 		},

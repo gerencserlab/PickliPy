@@ -6,7 +6,7 @@
         <Position Top="0" Left="0" Height="25" Width="61"/>
         <Parameters>
           <filename ID="0" Type="Text" Value="=&quot;&quot;%ProgramDataFolder%cellpose\Scripts\activate&quot;  &amp;&amp; &quot;python.exe&quot;&quot;"/>
-          <arguments ID="1" Type="Text" Value="-m -f -r"/>
+          <arguments ID="1" Type="Text" Value="-m -f -r -n"/>
           <format ID="2" Type="Text" Value="TIFLZW"/>
           <way ID="3" Type="Text" Value="Do not export (reuse)"/>
           <exportsuffix ID="4" Type="Text" Value=""/>
@@ -22,8 +22,8 @@
           <runas ID="14" Type="Bool" Value="No"/>
           <args1 ID="15" Type="Text" Value="PickliPy.Assay"/>
           <args2 ID="16" Type="Text" Value="C:\Akos\0Projects\0Screen\PickliPyTest\1_CellPaint\PY\test.xlsx"/>
-          <args3 ID="17" Type="Text" Value="True"/>
-          <args4 ID="18" Type="Text" Value=""/>
+          <args3 ID="17" Type="Text" Value="False"/>
+          <args4 ID="18" Type="Text" Value="False"/>
           <args5 ID="19" Type="Text" Value=""/>
           <args6 ID="20" Type="Text" Value=""/>
           <args7 ID="21" Type="Text" Value=""/>
@@ -46,8 +46,11 @@ Picklist generator for acoustic dispensing using Beckman Coulter Echo 650 contro
       <param ID="0" UID="86167734" Caption="File name (Excel)" Type="Text" Value="C:\Akos\0Projects\0Screen\PickliPyTest\1_CellPaint\PY\test.xlsx" Constraints="" ErrorMessage="" CustomCheck="File" Hint="Filename for loading or saving, or worksheet name for creating new or activating existing worksheet.">
         <link Caption="Run EXE::Argument 2 ()" ID="0" paramID="16" paramName="args2"/>
       </param>
-      <param ID="1" UID="106835817" Caption="Randomize? (True or False)" Type="Text" Value="True" Constraints="" ErrorMessage="" Hint="Argument entries will be interspersed with the &quot;Argument&quot; entry">
+      <param ID="1" UID="106835817" Caption="Randomize? (True or False)" Type="Text" Value="False" Constraints="" ErrorMessage="" Hint="Randomization is applied independently for each destination plate barcode. If a Layout: map is present in the DST worksheet, shuffling is performed independently within each layout label group.">
         <link Caption="Run EXE::Argument 3 (--randomize-wells)" ID="0" paramID="17" paramName="args3"/>
+      </param>
+      <param ID="2" UID="106851135" Caption="Compound names in Col D (PickliPy.Screen - style SRC) (True or False)" Type="Text" Value="False" Constraints="" ErrorMessage="" Hint="This allows using labels/slots instead of compound names in the label list of the DST sheet, and assign Compound names to these labels/slots in the SRC sheet.">
+        <link Caption="Run EXE::Argument 4 (-n)" ID="0" paramID="18" paramName="args4"/>
       </param>
     </Parameters>
   </Parameters>
