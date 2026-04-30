@@ -58,7 +58,8 @@
 			"request": "launch",
 			"module": "PickliPy.Scramble",
 			"args": [
-				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\7_Scramble\\scrambling_test.xlsx"		
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\7_Scramble\\scrambling_test_2.xlsx",
+				"--unscrambled-label"
 				
             ]
 		}

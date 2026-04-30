@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import openpyxl
-from openpyxl.utils.cell import get_column_letter
+from openpyxl.utils.cell import absolute_coordinate, get_column_letter
 
 import warnings
 
@@ -37,11 +37,10 @@ except ImportError:  # Allows direct execution from the source folder during dev
     )
 
 
-VERSION = "0.2-python"
+VERSION = "0.1-python"
 
 DEFAULT_PLATE_MAP_LABEL = "Plate Map:"
 DEFAULT_SCRAMBLED_LABEL = "Scrambled Plate Map:"
-DEFAULT_UNSCRAMBLED_LABEL = "Unscrambled Plate Map:"
 DEFAULT_SOURCE_START_COL = 2  # B. PicklyPy plate maps begin one cell right of the label.
 DEFAULT_EDGE_WIDTH = 2
 
@@ -53,17 +52,11 @@ GridPos = Tuple[int, int]  # 0-based row, 0-based column within the plate map.
 class ScrambleSummary:
     plate_map_row: int
     source_cells: int
-    scrambled_start_cell: str
-    unscrambled_start_cell: str
-
-    @property
-    def target_start_cell(self) -> str:
-        """Backward-compatible alias for the scrambled table start cell."""
-        return self.scrambled_start_cell
+    target_start_cell: str
 
 
 def _print_banner() -> None:
-    print("PicklyPy.scramble: add constrained scrambled and inverse plate-map formula tables.")
+    print("PicklyPy.scramble: add constrained scrambled plate-map formula tables.")
     print(f"Python version {VERSION}")
 
 
@@ -410,82 +403,13 @@ def _write_scrambled_table(
         if copy_styles:
             _copy_cell_style(source_cell, target_cell)
 
-        # Plain A1 coordinates are relative references in Excel. Keep these
-        # links movable so copied formula tables retain the same transform.
+        #target_cell.value = f"={absolute_coordinate(source_cell.coordinate)}"
         target_cell.value = f"={source_cell.coordinate}"
 
     _copy_column_widths(
         ws,
         source_start_col=source_start_col,
         target_start_col=target_start_col,
-        cols=cols,
-    )
-
-
-def _write_unscrambled_table(
-    ws: openpyxl.worksheet.worksheet.Worksheet,
-    *,
-    label_row: int,
-    mapping: Dict[GridPos, GridPos],
-    rows: int,
-    cols: int,
-    source_start_col: int,
-    scrambled_start_col: int,
-    unscrambled_start_col: int,
-    unscrambled_label: str,
-    copy_styles: bool,
-) -> None:
-    """Write the inverse formula table to the right of the scrambled table.
-
-    `mapping` is original source position -> scrambled target position. The
-    inverse table writes each original occupied position as a formula pointing
-    to the corresponding scrambled-table position, so evaluated values match
-    the original plate map.
-    """
-    _clear_target_area(
-        ws,
-        label_row=label_row,
-        rows=rows,
-        cols=cols,
-        target_start_col=unscrambled_start_col,
-    )
-
-    label_cell = ws.cell(row=label_row, column=unscrambled_start_col)
-    label_cell.value = unscrambled_label
-    _copy_cell_style(ws.cell(row=label_row, column=1), label_cell)
-
-    note_cell = ws.cell(row=label_row, column=unscrambled_start_col + 1)
-    note_cell.value = "Inverse of scrambled map"
-    _copy_cell_style(ws.cell(row=label_row, column=2), note_cell)
-
-    for source_pos, scrambled_pos in mapping.items():
-        original_cell = ws.cell(
-            row=label_row + 1 + source_pos[0],
-            column=source_start_col + source_pos[1],
-        )
-        scrambled_cell = ws.cell(
-            row=label_row + 1 + scrambled_pos[0],
-            column=scrambled_start_col + scrambled_pos[1],
-        )
-        unscrambled_cell = ws.cell(
-            row=label_row + 1 + source_pos[0],
-            column=unscrambled_start_col + source_pos[1],
-        )
-
-        if copy_styles:
-            # Copy styles positionally from the original map so the evaluated
-            # inverse map visually matches the original occupied wells.
-            _copy_cell_style(original_cell, unscrambled_cell)
-
-        # Relative reference into the scrambled table. This lets the scrambled
-        # and unscrambled formula blocks be copied together without freezing
-        # links to this worksheet.
-        unscrambled_cell.value = f"={scrambled_cell.coordinate}"
-
-    _copy_column_widths(
-        ws,
-        source_start_col=source_start_col,
-        target_start_col=unscrambled_start_col,
         cols=cols,
     )
 
@@ -505,17 +429,14 @@ def scramble_workbook(
     source_start_col: int = DEFAULT_SOURCE_START_COL,
     plate_map_label: str = DEFAULT_PLATE_MAP_LABEL,
     scrambled_label: str = DEFAULT_SCRAMBLED_LABEL,
-    unscrambled_label: str = DEFAULT_UNSCRAMBLED_LABEL,
     copy_styles: bool = True,
 ) -> List[ScrambleSummary]:
-    """Add scrambled and inverse formula tables to every Plate Map in DST.
+    """Add scrambled formula tables to every Plate Map in the DST worksheet.
 
     The default target set is the set of occupied cells in the original plate map.
     That preserves the original empty-cell mask while still permuting every occupied
-    well to a different row and different column. The inverse table reconstructs
-    the original occupied positions by linking back to the corresponding scrambled
-    positions. Use --allow-empty-targets to instead relocate occupied wells into
-    any legal well of the plate.
+    well to a different row and different column.  Use --allow-empty-targets to
+    instead relocate occupied wells into any legal well of the plate.
     """
     _print_banner()
 
@@ -539,8 +460,7 @@ def scramble_workbook(
             "--edge-width is too large for the requested plate dimensions."
         )
 
-    scrambled_start_col = source_start_col + cols
-    unscrambled_start_col = scrambled_start_col + cols
+    target_start_col = source_start_col + cols
 
     wb = openpyxl.load_workbook(input_path, data_only=False)
     ws = _get_dst_sheet(wb, dst_sheet)
@@ -566,29 +486,20 @@ def scramble_workbook(
             source_start_col=source_start_col,
         )
 
-        scrambled_start_cell = f"{get_column_letter(scrambled_start_col)}{label_row + 1}"
-        unscrambled_start_cell = f"{get_column_letter(unscrambled_start_col)}{label_row + 1}"
+        target_start_cell = f"{get_column_letter(target_start_col)}{label_row + 1}"
 
-        existing_scrambled = _target_area_has_content(
+        existing = _target_area_has_content(
             ws,
             label_row=label_row,
             rows=rows,
             cols=cols,
-            target_start_col=scrambled_start_col,
+            target_start_col=target_start_col,
         )
-        existing_unscrambled = _target_area_has_content(
-            ws,
-            label_row=label_row,
-            rows=rows,
-            cols=cols,
-            target_start_col=unscrambled_start_col,
-        )
-        existing = existing_scrambled + existing_unscrambled
         if existing and not force:
             preview = ", ".join(existing[:8])
             more = "" if len(existing) <= 8 else f", ... ({len(existing)} cells total)"
             raise PicklyPyConfigError(
-                "The target scrambled/unscrambled table area already contains content at "
+                "The target scrambled table area already contains content at "
                 f"{preview}{more}. Re-run with --force to overwrite it."
             )
 
@@ -600,33 +511,19 @@ def scramble_workbook(
                 rows=rows,
                 cols=cols,
                 source_start_col=source_start_col,
-                target_start_col=scrambled_start_col,
+                target_start_col=target_start_col,
                 scrambled_label=scrambled_label,
                 seed=seed,
                 copy_styles=copy_styles,
             )
-            _write_unscrambled_table(
-                ws,
-                label_row=label_row,
-                mapping={},
-                rows=rows,
-                cols=cols,
-                source_start_col=source_start_col,
-                scrambled_start_col=scrambled_start_col,
-                unscrambled_start_col=unscrambled_start_col,
-                unscrambled_label=unscrambled_label,
-                copy_styles=copy_styles,
-            )
             print(
-                f"Plate Map row {label_row}: original map is empty; wrote empty scrambled table at {scrambled_start_cell} "
-                f"and empty unscrambled table at {unscrambled_start_cell}."
+                f"Plate Map row {label_row}: original map is empty; wrote empty scrambled table at {target_start_cell}."
             )
             summaries.append(
                 ScrambleSummary(
                     plate_map_row=label_row,
                     source_cells=0,
-                    scrambled_start_cell=scrambled_start_cell,
-                    unscrambled_start_cell=unscrambled_start_cell,
+                    target_start_cell=target_start_cell,
                 )
             )
             continue
@@ -656,21 +553,9 @@ def scramble_workbook(
             rows=rows,
             cols=cols,
             source_start_col=source_start_col,
-            target_start_col=scrambled_start_col,
+            target_start_col=target_start_col,
             scrambled_label=scrambled_label,
             seed=seed,
-            copy_styles=copy_styles,
-        )
-        _write_unscrambled_table(
-            ws,
-            label_row=label_row,
-            mapping=mapping,
-            rows=rows,
-            cols=cols,
-            source_start_col=source_start_col,
-            scrambled_start_col=scrambled_start_col,
-            unscrambled_start_col=unscrambled_start_col,
-            unscrambled_label=unscrambled_label,
             copy_styles=copy_styles,
         )
 
@@ -681,16 +566,14 @@ def scramble_workbook(
         )
         print(
             f"Plate Map row {label_row}: scrambled {len(occupied)} occupied wells "
-            f"({edge_sources} from edge bands) into {scrambled_start_cell}; "
-            f"wrote inverse table into {unscrambled_start_cell}."
+            f"({edge_sources} from edge bands) into {target_start_cell}."
         )
 
         summaries.append(
             ScrambleSummary(
                 plate_map_row=label_row,
                 source_cells=len(occupied),
-                scrambled_start_cell=scrambled_start_cell,
-                unscrambled_start_cell=unscrambled_start_cell,
+                target_start_cell=target_start_cell,
             )
         )
 
@@ -713,8 +596,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="PicklyPy.scramble",
         description=(
-            "Add constrained scrambled and inverse unscrambled plate-map formula tables "
-            "to every Plate Map in the DST worksheet of a PicklyPy assay workbook."
+            "Add a constrained scrambled plate-map formula table to every Plate Map "
+            "in the DST worksheet of a PicklyPy assay workbook."
         ),
     )
     parser.add_argument("xlsx", help="Path to the PicklyPy assay .xlsx workbook")
@@ -740,7 +623,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite any existing content in the scrambled or unscrambled table areas.",
+        help="Overwrite any existing content in the scrambled table area.",
     )
     parser.add_argument(
         "--allow-empty-targets",
@@ -785,14 +668,9 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         help=f"Header label to write above each scrambled table. Default: {DEFAULT_SCRAMBLED_LABEL!r}.",
     )
     parser.add_argument(
-        "--unscrambled-label",
-        default=DEFAULT_UNSCRAMBLED_LABEL,
-        help=f"Header label to write above each unscrambled table. Default: {DEFAULT_UNSCRAMBLED_LABEL!r}.",
-    )
-    parser.add_argument(
         "--no-copy-styles",
         action="store_true",
-        help="Do not copy cell styles from source wells to their scrambled or unscrambled formula cells.",
+        help="Do not copy cell styles from source wells to their scrambled formula cells.",
     )
     parser.add_argument(
         "--no-pause",
@@ -817,7 +695,6 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             source_start_col=args.source_start_col,
             plate_map_label=args.plate_map_label,
             scrambled_label=args.scrambled_label,
-            unscrambled_label=args.unscrambled_label,
             copy_styles=not args.no_copy_styles,
         ),
         pause_on_exit=not args.no_pause,
