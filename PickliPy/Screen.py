@@ -16,7 +16,9 @@ warnings.filterwarnings(
 
 from .common import (
     PLATE_COLS_384,
+    PLATE_COLS_1536,
     PLATE_ROWS_384,
+    PLATE_ROWS_1536,
     PicklyPyConfigError,
     PicklyPyError,
     PicklyPyVolumeError,
@@ -71,6 +73,24 @@ def _matrix_nonempty_first_col(matrix: List[List[Any]]) -> List[List[Any]]:
     return out
 
 
+def _detect_plate_format(dst: List[List[Any]], plate_map_row: int) -> Tuple[int, int]:
+    """Auto-detect plate format from the column headers in the Plate Map row.
+
+    Counts numeric column headers in the row containing 'Plate Map:'.
+    Returns (plate_rows, plate_cols).
+    """
+    header_row = dst[plate_map_row]
+    col_count = 0
+    for c in range(1, len(header_row)):
+        v = as_number(header_row[c])
+        if v is not None and int(v) == col_count + 1:
+            col_count += 1
+        else:
+            break
+    if col_count == PLATE_COLS_1536:
+        return PLATE_ROWS_1536, PLATE_COLS_1536
+    return PLATE_ROWS_384, PLATE_COLS_384
+
 def _load_design_sheets(xlsx_path: Path) -> Tuple[List[List[Any]], List[List[Any]], List[List[Any]], Optional[List[List[Any]]]]:
     wb = openpyxl.load_workbook(xlsx_path, data_only=True)
 
@@ -84,9 +104,14 @@ def _load_design_sheets(xlsx_path: Path) -> Tuple[List[List[Any]], List[List[Any
     ws_src = _get_by_name(["SRC", "Src", "src"]) or wb.worksheets[0]
     ws_dst = _get_by_name(["DST", "Dst", "dst"]) or (wb.worksheets[1] if len(wb.worksheets) > 1 else None)
     ws_lib = _get_by_name(["LIB", "Lib", "lib"]) or (wb.worksheets[2] if len(wb.worksheets) > 2 else None)
-    ws_blk = _get_by_name(["BLK", "Blk", "blk", "Blacklist", "BLACKLIST"]) or (
-        wb.worksheets[3] if len(wb.worksheets) > 3 else None
-    )
+    ws_blk = None
+    for name in wb.sheetnames:
+        name_lower = name.lower()
+        if "blacklist" in name_lower or "blk" in name_lower:
+            ws_blk = wb[name]
+            break
+    if ws_blk is None and len(wb.worksheets) > 3:
+        ws_blk = wb.worksheets[3]
 
     if ws_dst is None or ws_lib is None:
         raise PicklyPyConfigError(
@@ -190,16 +215,17 @@ def _find_row(dst: List[List[Any]], key: str) -> Optional[int]:
     return None
 
 
-def _extract_plate_grid(dst: List[List[Any]], top_row: int, left_col: int = 1) -> List[List[str]]:
+def _extract_plate_grid(dst: List[List[Any]], top_row: int, left_col: int = 1,
+                        n_rows: int = PLATE_ROWS_384, n_cols: int = PLATE_COLS_384) -> List[List[str]]:
     grid: List[List[str]] = []
-    for r in range(top_row, top_row + PLATE_ROWS_384):
+    for r in range(top_row, top_row + n_rows):
         if r >= len(dst):
             raise PicklyPyConfigError(
-                f"DST worksheet ended while reading a 16x24 plate map at row {top_row+1}."
+                f"DST worksheet ended while reading a {n_rows}x{n_cols} plate map at row {top_row+1}."
             )
         row_vals = dst[r]
         row_out: List[str] = []
-        for c in range(left_col, left_col + PLATE_COLS_384):
+        for c in range(left_col, left_col + n_cols):
             v = row_vals[c] if c < len(row_vals) else ""
             # Screening script coerces numeric to string.
             if isinstance(v, (int, float)) and not isinstance(v, bool):
@@ -211,8 +237,8 @@ def _extract_plate_grid(dst: List[List[Any]], top_row: int, left_col: int = 1) -
 
 def _plate_map_pairs_from_grid(grid: List[List[str]]) -> List[Tuple[str, str]]:
     pairs: List[Tuple[str, str]] = []
-    for r in range(PLATE_ROWS_384):
-        for c in range(PLATE_COLS_384):
+    for r in range(len(grid)):
+        for c in range(len(grid[0])):
             cell = grid[r][c]
             if cell.strip() == "":
                 continue
@@ -228,8 +254,12 @@ class _Blacklist:
     blacklisted_wells_by_dst: Dict[str, List[str]]
 
 
-def _parse_blacklist(blk: Optional[List[List[Any]]]) -> Optional[_Blacklist]:
+def _parse_blacklist(blk: Optional[List[List[Any]]], plate_rows: int = PLATE_ROWS_384, plate_cols: int = PLATE_COLS_384) -> Optional[_Blacklist]:
     if blk is None:
+        return None
+
+    if plate_rows > PLATE_ROWS_384:
+        print("Note: Blacklist is not yet supported for 1536-well plate format. Skipping blacklist.")
         return None
 
     # Convert entire sheet to string matrix for key scanning.
@@ -238,7 +268,7 @@ def _parse_blacklist(blk: Optional[List[List[Any]]]) -> Optional[_Blacklist]:
     # Find "Groups Map:" and read the next 16 rows x 24 cols from B..Y.
     groups_row = None
     for i, row in enumerate(blk_str):
-        if row and row[0] == "Groups Map:":
+        if row and row[0] == "Groups:":
             groups_row = i
             break
 
@@ -246,6 +276,7 @@ def _parse_blacklist(blk: Optional[List[List[Any]]]) -> Optional[_Blacklist]:
         return None
 
     groups_grid = _extract_plate_grid(blk_str, groups_row + 1, left_col=1)
+    
 
     groups_by_label: Dict[str, List[str]] = {}
     label_by_well: Dict[str, str] = {}
@@ -261,18 +292,36 @@ def _parse_blacklist(blk: Optional[List[List[Any]]]) -> Optional[_Blacklist]:
     # Find "Well Blacklist:" table: two columns A..B until blank in A.
     blk_row = None
     for i, row in enumerate(blk_str):
-        if row and row[0] == "Well Blacklist:":
-            blk_row = i
+        for j, cell in enumerate(row):
+            cell_clean = cell.strip().lower().replace("_", " ").rstrip(":")
+            if cell_clean in ("well blacklist", "well_blacklist"):
+                blk_row = i
+                break
+        if blk_row is not None:
             break
 
     blacklisted_by_dst: Dict[str, List[str]] = {}
     if blk_row is not None:
+        # Find which columns hold barcode and wells by checking the header row
+        barcode_col = None
+        wells_col = None
+        for j, cell in enumerate(blk_str[blk_row]):
+            cell_clean = cell.strip().lower().replace("_", " ").rstrip(":")
+            if "barcode" in cell_clean:
+                barcode_col = j
+            if "blacklist" in cell_clean or "well" in cell_clean:
+                wells_col = j
+        if barcode_col is None:
+            barcode_col = 0
+        if wells_col is None:
+            wells_col = 1
+
         j = blk_row + 1
         while j < len(blk_str):
-            barcode = blk_str[j][0].strip() if len(blk_str[j]) > 0 else ""
+            barcode = blk_str[j][barcode_col].strip() if len(blk_str[j]) > barcode_col else ""
             if barcode == "":
                 break
-            wells_raw = blk_str[j][1].strip() if len(blk_str[j]) > 1 else ""
+            wells_raw = blk_str[j][wells_col].strip() if len(blk_str[j]) > wells_col else ""
             wells = [w.strip() for w in wells_raw.split(",") if w.strip()]
             blacklisted_by_dst[barcode] = wells
             j += 1
@@ -314,9 +363,13 @@ def generate_screening_picklist(
     # Plate map and labels list parsing (supports only one plate map, per Wolfram comment).
     plate_map_row = _find_row(dst, "Plate Map:")
     if plate_map_row is None:
-        raise PicklyPyConfigError("DST worksheet is missing a 'Plate Map:' section.")
+        raise PicklyPyConfigError(
+            "DST worksheet is missing a 'Plate Map:' section.")
 
-    labels_row = _find_row(dst[plate_map_row + 1 :], "Labels")
+    plate_rows, plate_cols = _detect_plate_format(dst, plate_map_row)
+    print(f"Detected plate format: {plate_rows} rows x {plate_cols} cols")
+
+    labels_row = _find_row(dst[plate_map_row + 1:], "Labels")
     if labels_row is None:
         raise PicklyPyConfigError("DST worksheet is missing a 'Labels' section after the plate map.")
     labels_row = plate_map_row + 1 + labels_row
@@ -324,7 +377,8 @@ def generate_screening_picklist(
     # Parameters between plate map and labels are read from col A..B, but we only need barcodes, picklist name, well volume.
     # (In screeningpicklist.wls, Picklist Name, Barcode_DST, etc are typically in header anyway.)
 
-    plate_grid = _extract_plate_grid(dst, plate_map_row + 1, left_col=1)
+    plate_grid = _extract_plate_grid(
+        dst, plate_map_row + 1, left_col=1, n_rows=plate_rows, n_cols=plate_cols)
     b0 = _plate_map_pairs_from_grid(plate_grid)
 
     # Labels table starts at labels_row+1 and runs until blank in col A.
@@ -352,7 +406,14 @@ def generate_screening_picklist(
         raise PicklyPyConfigError("DST 'Labels' list is empty.")
 
     # Blacklist parsing
-    blacklist = _parse_blacklist(blk)
+    blacklist = _parse_blacklist(
+        blk, plate_rows=plate_rows, plate_cols=plate_cols)
+    
+
+    if blacklist is not None:
+        print(f"Blacklisted_wells_by_dst = {blacklist.blacklisted_wells_by_dst}")
+    else:
+        print("No blacklisted wells.")
 
     # Precompute labeldict and reverse mapping (used by blacklist handler)
     labeldict: Dict[str, str] = {as_str(row[0]): as_str(row[1]) for row in labels_data}
@@ -485,7 +546,56 @@ def generate_screening_picklist(
     lastbarcode: str = ""
 
     # Main loop: one destination plate per iteration, until the library is exhausted.
-    while lib_index < len(lib) - 1:
+    # Build valid well order from groups grid (if available), else from plate map template
+    if blacklist is not None and blacklist.groups_by_label:
+        # Valid wells = any well with a group label, in plate order (top-left to bottom-right)
+        valid_well_template: List[str] = []
+        for r in range(plate_rows):
+            for c in range(plate_cols):
+                w = well_name(r + 1, c + 1)
+                if w in blacklist.label_by_well:
+                    valid_well_template.append(w)
+    else:
+        # No groups grid — valid wells are those in the plate map template
+        valid_well_template = [w for w, _ in b0]
+
+    # Label sequence from plate map template, in plate-map order
+    label_sequence: List[str] = [label for _, label in b0]
+
+    # Identify control wells: wells in b0 whose labels are NOT in the library-filled set.
+    # These are fixed to their positions regardless of blacklist.
+    # Library-filled labels use wildcard rows (compound = "*" in SRC) or @-references.
+    src_rows_check = src[1:] if len(src) > 1 else []
+    explicit_compounds = set()
+    has_wildcard = False
+    for r in src_rows_check:
+        if as_str(r[1]) == "*":
+            has_wildcard = True
+        elif not as_str(r[0]).startswith("@"):
+            explicit_compounds.add(as_str(r[1]))
+
+    # Map label -> compound from labels_data
+    label_to_compound: Dict[str, str] = {as_str(row[0]): as_str(row[1]) for row in labels_data}
+
+    # Control labels = those whose compound is explicitly defined in SRC (not wildcard-filled)
+    control_labels: set = set()
+    library_labels: List[str] = []
+    for lab in label_sequence:
+        comp = label_to_compound.get(lab, "")
+        if comp in explicit_compounds:
+            control_labels.add(lab)
+        else:
+            library_labels.append(lab)
+
+    # Control well assignments from original plate map (fixed positions)
+    control_pairs: List[Tuple[str, str]] = [(w, lab) for w, lab in b0 if lab in control_labels]
+    control_wells: set = {w for w, _ in control_pairs}
+
+    # Main loop
+    carry_forward_labels: List[str] = []
+    
+
+    while lib_index < len(lib) - 1 or carry_forward_labels:
         dst_count += 1
         if dst_count > len(header.barcodes_dst):
             raise PicklyPyConfigError(
@@ -493,43 +603,58 @@ def generate_screening_picklist(
             )
         barcode_dst = header.barcodes_dst[dst_count - 1]
 
-        b_pairs = list(b0)
-
-        # Blacklist handling
+        # Get blacklisted wells for this plate
         clname_blk_entries: List[List[Any]] = []
+        blacklisted_set: set = set()
         if blacklist is not None:
-            blacklisted_wells = blacklist.blacklisted_wells_by_dst.get(barcode_dst)
+            blacklisted_wells = blacklist.blacklisted_wells_by_dst.get(barcode_dst, [])
             if blacklisted_wells:
                 print(f"****** Preparing Blacklist for: {barcode_dst} ******")
-
-                # Free wells pool per group label
-                free_wells: Dict[str, List[str]] = {}
-                used_wells = [w for w, _ in b_pairs]
-                for g, wells in blacklist.groups_by_label.items():
-                    free_wells[g] = [w for w in wells if w not in used_wells and w not in blacklisted_wells]
-
-                for bad in blacklisted_wells:
-                    b_pairs = fix_one_blacklisted_well(
-                        bad,
-                        b_pairs=b_pairs,
-                        free_wells=free_wells,
-                        blacklisted_wells=blacklisted_wells,
-                    )
-
-                # Mark blacklisted wells as rejected in merge table
+                blacklisted_set = set(blacklisted_wells)
                 for bad in blacklisted_wells:
                     clname_blk_entries.append([bad, barcode_dst, "rejected", 0])
+                print(f"Blacklisted {len(blacklisted_wells)} wells on {barcode_dst}")
 
-                # Add remaining free wells using the last label in the labels list
-                last_label = as_str(labels_data[-1][0])
-                remaining_free = [w for wells in free_wells.values() for w in wells]
-                b_pairs.extend([(w, last_label) for w in remaining_free])
+        # Available wells = valid template minus blacklisted minus control wells
+        available_wells: List[str] = [
+            w for w in valid_well_template
+            if w not in blacklisted_set and w not in control_wells
+        ]
 
-                if remaining_free:
-                    print(
-                        "Adding remaining free wells (to last label): "
-                        + ", ".join(remaining_free)
-                    )
+        # Build b_pairs for this plate: controls at fixed positions + library labels into available wells
+        b_pairs: List[Tuple[str, str]] = []
+
+        # Add control pairs (skip if control well is blacklisted on this plate)
+        for w, lab in control_pairs:
+            if w not in blacklisted_set:
+                b_pairs.append((w, lab))
+            else:
+                print(f"Warning: control well {w} ({lab}) is blacklisted on {barcode_dst}, skipping control")
+
+        # Labels to assign: carried-forward first, then fresh from template
+        labels_to_assign: List[str] = list(carry_forward_labels)
+        carry_forward_labels = []
+
+        # Fill remaining wells from the repeating label template
+        template_idx = 0
+        while len(labels_to_assign) < len(available_wells) and template_idx < len(library_labels):
+            labels_to_assign.append(library_labels[template_idx])
+            template_idx += 1
+
+        # Assign labels to available wells
+        for i, w in enumerate(available_wells):
+            if i < len(labels_to_assign):
+                b_pairs.append((w, labels_to_assign[i]))
+
+        # Any leftover labels carry forward
+        if len(labels_to_assign) > len(available_wells):
+            carry_forward_labels = labels_to_assign[len(available_wells):]
+            print(f"Carrying forward {len(carry_forward_labels)} displaced labels to next plate")
+
+        print(f"Plate {barcode_dst}: {len(available_wells)} available wells, {len([p for p in b_pairs if p[1] not in control_labels])} library compounds assigned")
+
+        if not b_pairs:
+            break
 
         # Build c list (dstwell,label) by splitting any multi-label cells
         c_pairs: List[Tuple[str, str]] = []
@@ -753,7 +878,8 @@ def generate_screening_picklist(
             loopdst.append(barcode_dst)
 
             if barcode_dst not in conditionlabels:
-                conditionlabels[barcode_dst] = [["" for _ in range(PLATE_COLS_384)] for _ in range(PLATE_ROWS_384)]
+                conditionlabels[barcode_dst] = [
+                    ["" for _ in range(plate_cols)] for _ in range(plate_rows)]
 
             print(f"Dispensing from: {plate}")
             print(f"Dispensing into: {barcode_dst}")
@@ -944,10 +1070,13 @@ def generate_screening_picklist(
     for bcd in dst_unique:
         lines_comp.append(bcd)
         lines_conc.append(bcd)
-        table = conditionlabels.get(bcd) or [["" for _ in range(PLATE_COLS_384)] for _ in range(PLATE_ROWS_384)]
-        for r in range(PLATE_ROWS_384):
-            lines_comp.append("\t".join(_cell_compound(table[r][c]) for c in range(PLATE_COLS_384)))
-            lines_conc.append("\t".join(_cell_conc(table[r][c]) for c in range(PLATE_COLS_384)))
+        table = conditionlabels.get(
+            bcd) or [["" for _ in range(plate_cols)] for _ in range(plate_rows)]
+        for r in range(plate_rows):
+            lines_comp.append("\t".join(_cell_compound(
+                table[r][c]) for c in range(plate_cols)))
+            lines_conc.append("\t".join(_cell_conc(
+                table[r][c]) for c in range(plate_cols)))
 
     write_text(compounds_path, "\n".join(lines_comp))
     write_text(conc_path, "\n".join(lines_conc))
