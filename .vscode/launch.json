@@ -11,7 +11,7 @@
 			"module": "PickliPy.Assay",
 			"args": [
                 "-f",
-				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\5_Dose_repsponse_col_names\\randomize\\260129ChronicDR1-9-assay.xlsx",
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\5_Dose_repsponse_col_names\\chronic-assay-picklist\\260129ChronicDR1-9-assay.xlsx",
 				"-n",
 				"True",
 				"-r",
@@ -25,7 +25,7 @@
 			"request": "launch",
 			"module": "PickliPy.Screen",
 			"args": [
-                "C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\3_Screen\\PY\\picklist-screening-mitoactive950_250404.xlsx"
+                "C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\5_Dose_repsponse_col_names\\acute_screening-picklist\\260129Acute-DR1-9.xlsx"
             ]
 		},
 				{
@@ -38,6 +38,27 @@
 				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\4_Bluetable\\PY\\blue tables inventory.xlsx",
 				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\4_Bluetable\\PY\\bluetables"
 				
+				
+            ]
+		},
+				{
+			"name": "Visualize",
+			"type": "debugpy",
+			"request": "launch",
+			"module": "PickliPy.Visualize",
+			"args": [
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\6_AlphaLisa\\AlphaLISA_Picklist.csv"
+				
+				
+            ]
+		},
+				{
+			"name": "Scramble",
+			"type": "debugpy",
+			"request": "launch",
+			"module": "PickliPy.Scramble",
+			"args": [
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\7_Scramble\\scrambling_test.xlsx"		
 				
             ]
 		}
