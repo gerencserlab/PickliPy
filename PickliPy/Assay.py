@@ -564,7 +564,9 @@ def _build_treatment_signatures_for_randomization(
                     num = as_number(conc_grid[r][c])
                     if num is None:
                         continue
-                    if float(num) > 0:
+                    # Keep 0 concentrations (for metadata), but treat blanks as missing.
+                    # Negative values are ignored.
+                    if float(num) >= 0:
                         conc_map[well_name(r + 1, c + 1)] = float(num)
 
         # Dose-response: label -> compound name (first occurrence).
@@ -817,7 +819,9 @@ def generate_assay_picklists(
                     num = as_number(v)
                     if num is None:
                         continue
-                    if float(num) > 0:
+                    # Keep 0 concentrations (for metadata), but treat blanks as missing.
+                    # Negative values are ignored.
+                    if float(num) >= 0:
                         dstwell = well_name(r+1,c+1)
                         conc_map[dstwell] = float(num)
 
@@ -859,6 +863,18 @@ def generate_assay_picklists(
 
         # Barcode-independent plate map of compound labels for this addition (used for metadata).
         # If destination well randomization is enabled, this grid will be permuted per destination barcode.
+        #
+        # IMPORTANT: In dose-response mode (Concentrations Map present), the concentration shown in the label
+        # list is ignored for dispensing, and the per-well value from the Concentrations Map must be used
+        # for the metadata maps as well (including explicit 0 values).
+        label_to_comp: Dict[str, str] = {}
+        if dosing:
+            for row in add.label_rows:
+                lbl = as_str(row[0]).strip() if len(row) > 0 else ""
+                comp = as_str(row[1]).strip() if len(row) > 1 else ""
+                if lbl and comp and lbl not in label_to_comp:
+                    label_to_comp[lbl] = comp
+
         platemap_with_compounds_base: List[List[str]] = []
         for r in range(PLATE_ROWS_384):
             row_out: List[str] = []
@@ -867,9 +883,24 @@ def generate_assay_picklists(
                 if cell.strip() == "":
                     row_out.append("")
                     continue
-                parts: List[str] = []
-                for lab in split_labels(cell):
-                    parts.append(compoundlabels[add.index].get(lab, lab))
+
+                labs = split_labels(cell)
+                if not labs:
+                    row_out.append("")
+                    continue
+
+                if dosing:
+                    w = well_name(r + 1, c + 1)
+                    if w not in conc_map:
+                        # No numeric concentration specified -> treat as no dispense / no metadata entry.
+                        row_out.append("")
+                        continue
+                    conc_final = conc_map[w]
+                    conc_str = as_str(integer_chop(float(conc_final)))
+                    parts = [f"{label_to_comp.get(lab, lab)}_{conc_str}" for lab in labs]
+                else:
+                    parts = [compoundlabels[add.index].get(lab, lab) for lab in labs]
+
                 row_out.append("+".join(parts))
             platemap_with_compounds_base.append(row_out)
 
@@ -909,6 +940,9 @@ def generate_assay_picklists(
                     if dstwell not in conc_map_use:
                         continue
                     conc_final = conc_map_use[dstwell]
+                    if float(conc_final) <= 0:
+                        # Explicit 0 concentration -> no dispense (but keep for metadata outputs).
+                        continue
                     if lab not in label_defs:
                         continue
                     src_wells, stock, _ignored = label_defs[lab][0]

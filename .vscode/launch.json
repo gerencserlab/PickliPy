@@ -11,11 +11,11 @@
 			"module": "PickliPy.Assay",
 			"args": [
                 "-f",
-				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\5_Dose_repsponse_col_names\\chronic-assay-picklist\\260129ChronicDR1-9-assay.xlsx",
+				"C:\\Akos\\0Projects\\0Screen\\PickliPyTest\\6_AlphaLisa\\concentration_map_test.xlsx",
 				"-n",
-				"True",
+				"False",
 				"-r",
-				"True"
+				"False"
 
             ]
 		},
