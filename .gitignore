@@ -8,4 +8,4 @@ __pycache__/*
 *list.txt
 *bak
 *.csv
-
+.vscode/
