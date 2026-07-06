@@ -37,6 +37,8 @@ class PicklyPyVolumeError(PicklyPyError):
 
 PLATE_ROWS_384 = 16
 PLATE_COLS_384 = 24
+PLATE_ROWS_1536 = 32
+PLATE_COLS_1536 = 48
 
 
 # -----------------------------
