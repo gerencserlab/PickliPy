@@ -1,0 +1,51 @@
+{
+  "min_source_volume_ul": 15,
+  "header": {
+    "Well volume (ul):": 50,
+    "Inventory_SRC:": "AssayInvSRC",
+    "Inventory_DST:": "AssayInvDST",
+    "Inventory_SRC_Rack#:": 1,
+    "Inventory_DST_Rack#:": 2,
+    "Process_SRC:": "AssayProcSRC",
+    "Process_DST:": "AssayProcDST"
+  },
+  "source_rows": [
+    {"source_well": "A1", "compound_name": "FCCP", "stock_concentration": 2000, "unit": "uM", "volume_ul": 30, "plate_barcode": "ToolSRC"},
+    {"source_well": "A2", "compound_name": "OLIGO", "stock_concentration": 1000, "unit": "uM", "volume_ul": 30, "plate_barcode": "ToolSRC"},
+    {"source_well": "A3", "compound_name": "ROT", "stock_concentration": 1000, "unit": "uM", "volume_ul": 30, "plate_barcode": "ToolSRC"}
+  ],
+  "additions": [
+    {
+      "picklist_name": "MitoDose",
+      "barcode_src": "ToolSRC",
+      "barcode_dst": ["CellPlate_001", "CellPlate_002"],
+      "plate_map": {
+        "C4": "FCCP", "C5": "FCCP", "C6": "FCCP", "C7": "FCCP", "C8": "FCCP", "C9": "FCCP", "C10": "FCCP", "C11": "FCCP",
+        "D4": "FCCP", "D5": "FCCP", "D6": "FCCP", "D7": "FCCP", "D8": "FCCP", "D9": "FCCP", "D10": "FCCP", "D11": "FCCP"
+      },
+      "concentration_map": {
+        "C4": 0.03, "C5": 0.1, "C6": 0.3, "C7": 1, "C8": 3, "C9": 10, "C10": 30, "C11": 100,
+        "D4": 0.03, "D5": 0.1, "D6": 0.3, "D7": 1, "D8": 3, "D9": 10, "D10": 30, "D11": 100
+      },
+      "labels": [
+        {"label": "FCCP", "compound": "FCCP", "concentration": 0}
+      ]
+    },
+    {
+      "picklist_name": "MitoDose",
+      "barcode_src": "ToolSRC",
+      "barcode_dst": ["CellPlate_001", "CellPlate_002"],
+      "plate_map": {
+        "F4": "OLIGO+ROT",
+        "F5": "OLIGO+ROT",
+        "F6": "OLIGO+FCCP",
+        "F7": "OLIGO+FCCP"
+      },
+      "labels": [
+        {"label": "OLIGO", "compound": "OLIGO", "concentration": 1},
+        {"label": "ROT", "compound": "ROT", "concentration": 1},
+        {"label": "FCCP", "compound": "FCCP", "concentration": 1}
+      ]
+    }
+  ]
+}

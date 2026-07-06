@@ -1,0 +1,3 @@
+interface:
+  display_name: "PickliPy Excel Design"
+  short_description: "Create and validate PickliPy.Assay and PickliPy.Screen Excel design workbooks."

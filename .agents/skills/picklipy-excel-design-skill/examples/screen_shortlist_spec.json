@@ -1,0 +1,46 @@
+{
+  "picklist_name": "ScreenSubset",
+  "dst_barcodes": ["ScreenPlate_001", "ScreenPlate_002", "ScreenPlate_003"],
+  "min_source_volume_ul": 2.5,
+  "library_headers": ["Source Well", "Identifier", "Stock concentration", "Plate barcode", "Final concentration", "Category"],
+  "library_rows": [
+    {"Source Well": "A1", "Identifier": "Cmpd001", "Stock concentration": 10000, "Plate barcode": "LibPlate_A", "Final concentration": 10, "Category": "mitochondria"},
+    {"Source Well": "A2", "Identifier": "Cmpd002", "Stock concentration": 10000, "Plate barcode": "LibPlate_A", "Final concentration": 10, "Category": "mitochondria"},
+    {"Source Well": "A3", "Identifier": "Cmpd003", "Stock concentration": 10000, "Plate barcode": "LibPlate_A", "Final concentration": 10, "Category": "other"},
+    {"Source Well": "B1", "Identifier": "Cmpd004", "Stock concentration": 10000, "Plate barcode": "LibPlate_B", "Final concentration": 10, "Category": "mitochondria"},
+    {"Source Well": "B2", "Identifier": "Cmpd005", "Stock concentration": 10000, "Plate barcode": "LibPlate_B", "Final concentration": 10, "Category": "mitochondria"}
+  ],
+  "shortlist_filters": {
+    "Category": "mitochondria"
+  },
+  "controls": [
+    {"source_well": "A1", "compound_name": "veh", "stock_concentration": 10000, "identifier": "DMSO", "volume_ul": 10, "plate_barcode": "*"},
+    {"source_well": "A2", "compound_name": "pos", "stock_concentration": 10000, "identifier": "PositiveControl", "volume_ul": 10, "plate_barcode": "*"}
+  ],
+  "src_reference_row": {
+    "source_well": "@A",
+    "compound_name": "*",
+    "stock_concentration": "@C",
+    "identifier": "@B",
+    "volume_ul": 5,
+    "plate_barcode": "@D"
+  },
+  "layout": {
+    "type": "slot_layout",
+    "slots": 4,
+    "replicates": 2,
+    "concentrations": [10],
+    "reserve_edges": true,
+    "control_label": "veh",
+    "positive_label": "pos",
+    "fill_label": "fill",
+    "order": "row-major",
+    "group_mode": "all"
+  },
+  "blacklist": {
+    "ScreenPlate_001": ["B2", "C3"],
+    "ScreenPlate_002": []
+  },
+  "include_blacklist": true,
+  "sort_library_by_barcode": true
+}
