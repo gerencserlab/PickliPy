@@ -1,5 +1,5 @@
-<IAPipeline Description="Image Analyst MKII XML 1.0" Version="1218">
-  <Pipeline Version="1218">
+<IAPipeline Description="Image Analyst MKII XML 1.0" Version="1222">
+  <Pipeline Version="1222">
     <Functions>
       <fRunEXE Caption="Run EXE" ID="0" PID="162" Description="Run EXE">
         <Caption>Run EXE</Caption>
@@ -30,21 +30,34 @@
           <args8 ID="22" Type="Text" Value=""/>
           <args9 ID="23" Type="Text" Value=""/>
           <args10 ID="24" Type="Text" Value=""/>
+          <args11 ID="25" Type="Text" Value=""/>
+          <args12 ID="26" Type="Text" Value=""/>
+          <args13 ID="27" Type="Text" Value=""/>
+          <args14 ID="28" Type="Text" Value=""/>
+          <args15 ID="29" Type="Text" Value=""/>
+          <args16 ID="30" Type="Text" Value=""/>
+          <args17 ID="31" Type="Text" Value=""/>
+          <args18 ID="32" Type="Text" Value=""/>
+          <args19 ID="33" Type="Text" Value=""/>
+          <args20 ID="34" Type="Text" Value=""/>
         </Parameters>
         <Inputs Types="" IDs=""/>
         <Outputs Types="" IDs=""/>
       </fRunEXE>
     </Functions>
   </Pipeline>
-  <Parameters Version="1218">
+  <Parameters Version="1222">
     <Caption>Install PickliPy</Caption>
     <DesignVersion>1</DesignVersion>
     <Description>Run this pipeline once to install additional modules required for PickliPy.
-For simplicity, PickliPy uses the Cellpose environment for now, so Cellpose installation is needed - see Help main menu, Primer.
-</Description>
+For simplicity, PickliPy uses the internal Cellpose environment for, so Cellpose installation is needed - see Help main menu, Primer.
+No additional Python installation is required.
+
+Citation for PickliPy:
+Varunya M. Kattunga, Steven A. Wrobel, Chad A. Lerner, Victor M. Derycz, Elizabeth B. Stephens, Ian S. Brown, Hao Cheng, Sima Taghizadeh, Josef Byrne, Susan Gross, Susan Schneider, Chatura Senadheera, Asia Davis-Castillo, Shane Vistalli-Alvarado, Elena Goncharova, John C. Newman, Brianna J. Stubbs, Simon Melov, Gordon Lithgow, Lisa M. Ellerby, Julie K. Andersen and Akos A. Gerencser. Advanced Open-source Experimental-Design Tools for Microplate-Based Assays with Acoustic Liquid Handling. BIORXIV/2026/735934</Description>
     <Parameters/>
   </Parameters>
-  <Options Version="1218">
+  <Options Version="1222">
     <usesexcel Value="false"/>
     <warnrefimage Value="false"/>
     <warnrefimagemsg Value=""/>

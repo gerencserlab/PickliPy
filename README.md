@@ -8,11 +8,36 @@ It supports three workflows:
 - **Screen** – screening / reformatting where a **library table (LIB)** is threaded into a single destination plate template across as many destination plates as needed.
 - **Bluetable** – a “blue-table” workflow where **each destination plate is defined by its own XLSX file**; all destination files in a folder are merged into a single picklist.
 
+See blank design files in the project folder above.
+
 > These tools are written for internal Echo + Plate:Works workflows. They perform extensive input validation (missing labels, missing barcodes, out-of-volume checks, etc.) and will stop with a clear error if something is inconsistent.
+
+Cite PickliPy as:
+Varunya M. Kattunga, Steven A. Wrobel, Chad A. Lerner, Victor M. Derycz, Elizabeth B. Stephens, Ian S. Brown, Hao Cheng, Sima Taghizadeh, Josef Byrne, Susan Gross, Susan Schneider, Chatura Senadheera, Asia Davis-Castillo, Shane Vistalli-Alvarado, Elena Goncharova, John C. Newman, Brianna J. Stubbs, Simon Melov, Gordon Lithgow, Lisa M. Ellerby, Julie K. Andersen and Akos A. Gerencser. Advanced Open-source Experimental-Design Tools for Microplate-Based Assays with Acoustic Liquid Handling. BIORXIV/2026/735934
+
+# PickliPy launched from Image Analyst MKII
+This is a convenience approach for GUI launch if you analyze images with PickliPy metadata in Image Analyst. See standalone installation below.
+
+## List of pipelines
+* [Assay picklist generator](Assay_picklist_generator.md)
+* [Install PickliPy](install_PickliPy.md)
+* [Screening picklist generator](Screening_picklist_generator.md)
+
+## How to use
+To open and edit *.ips (XML) Image Processing Pipeline files download [Image Analyst MKII for Windows](https://www.imageanalyst.net/downloads/?item=recent/imageanalystMKII64.msi).
+1. Clone this git in Image Analyst MKII by Edit/Download and Manage Pipelines from GitHub. 
+2. Press the "< > Code" button [above in this page](https://github.com/gerencserlab/IA-Cellpose-tools/) and copy the URL of this git.
+3. Paste the URL in the URL field in the Connect to Git window in Image Analyst MKII.
+4. Press Download.
+5. The pipelines deposited here will appear in the middle section of the Pipelines main menu.
+6. Use the Help/Primer in Image Analyst MKII to install Cellpose. PickliPy uses the Cellpose Python environment in Image Analyst MKII.
+7. [Install PickliPy](install_PickliPy.md)
+8. Use the above pipelines to launch PickliPy.Screen or PickliPy.Assay
+
 
 ---
 
-## Installation
+# Standalone Installation
 
 ### 1) Requirements
 
@@ -238,7 +263,8 @@ Close any open CSV/TXT files before running or simulating an assay in Plate:Work
 - **Excel lock files**: if you see `~$...xlsx` files, close Excel and re-run.
 
 ---
+[Gerencser Lab on Github](https://github.com/gerencserlab)
 
 ## License / attribution
+CC-BY-NC
 
-Internal use. If you need to redistribute this package or publish derived work, add an explicit license and attribution policy here.
