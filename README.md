@@ -1,22 +1,33 @@
 # PickliPy
 
-PickliPy is a small set of command-line tools that generate **Echo 650** picklists (CSV) and the companion **Plate:Works** helper files (inventory + process lists) from Excel-based experimental designs.
+PickliPy is a set of command-line and agentic tools that generate **Beckman Coulter Echo 650 or Echo-series** picklists (CSV) and the companion **Plate:Works** helper files (inventory + process lists) from Excel-based experimental designs, using Python.
 
-It supports three workflows:
-
+### It supports three workflows:
 - **Assay** – flexible, user-defined plate maps for tool compounds, combinatorics, dose response, and serial additions.
 - **Screen** – screening / reformatting where a **library table (LIB)** is threaded into a single destination plate template across as many destination plates as needed.
-- **Bluetable** – a “blue-table” workflow where **each destination plate is defined by its own XLSX file**; all destination files in a folder are merged into a single picklist.
+- **Bluetable** – [the mitochondrial membrane potential assay “blue-table” workflow](https://pubmed.ncbi.nlm.nih.gov/35771433/) is supported where **each destination plate is defined by its own XLSX file**; all destination files in a folder are merged into a single picklist.
 
 See blank design files in the project folder above.
 
-> These tools are written for internal Echo + Plate:Works workflows. They perform extensive input validation (missing labels, missing barcodes, out-of-volume checks, etc.) and will stop with a clear error if something is inconsistent.
+> These tools are written for Beckman Echo + Revvity Plate:Works workflows. They perform extensive input validation (missing labels, missing barcodes, out-of-volume checks, etc.) and will stop with a clear error if something is inconsistent.
 
-Cite PickliPy as:
-Varunya M. Kattunga, Steven A. Wrobel, Chad A. Lerner, Victor M. Derycz, Elizabeth B. Stephens, Ian S. Brown, Hao Cheng, Sima Taghizadeh, Josef Byrne, Susan Gross, Susan Schneider, Chatura Senadheera, Asia Davis-Castillo, Shane Vistalli-Alvarado, Elena Goncharova, John C. Newman, Brianna J. Stubbs, Simon Melov, Gordon Lithgow, Lisa M. Ellerby, Julie K. Andersen and Akos A. Gerencser. Advanced Open-source Experimental-Design Tools for Microplate-Based Assays with Acoustic Liquid Handling. BIORXIV/2026/735934
+### Three Ways of running PickliPy
+- **Standalone** - install latest (3.10+) Python and clone this git, use command window.
+- **Use Image Analyst MKII** - as GUI to launch PickliPy (and then use metadata during image analysis)
+- **As an agentic tool** - make and troubleshoot design files with AI
+
+### Cite PickliPy as:
+Varunya M. Kattunga, Steven A. Wrobel, Chad A. Lerner, Victor M. Derycz, Elizabeth B. Stephens, Ian S. Brown, Hao Cheng, Sima Taghizadeh, Josef Byrne, Susan Gross, Susan Schneider, Chatura Senadheera, Asia Davis-Castillo, Shane Vistalli-Alvarado, Elena Goncharova, John C. Newman, Brianna J. Stubbs, Simon Melov, Gordon Lithgow, Lisa M. Ellerby, Julie K. Andersen and Akos A. Gerencser. Advanced Open-source Experimental-Design Tools for Microplate-Based Assays with Acoustic Liquid Handling. BIORXIV/2026/735934 [DOI:10.64898/2026.07.05.735934](https://doi.org/10.64898/2026.07.05.735934)
+# PickliPy as Agentic Skill
+Clone this git and open folder in Visual Studio Code with OpenAI Codex extension installed.
+
+Example Prompt:
+```
+Use picklipy-excel-design-skill to make a design file and run PickliPy.Screen for a 5-point dose resposnse using only compounds from the library that mention autophagy. Add 24 DMSO controls to each plate, evenly distributed. Use center 240 wells only.  The library file is in test_screen\L5300-Mitochondria-Targeted Compound Library-950cpds.sdf. Work in that folder. Use concentrations between 0.5 and 10uM in log steps. The stocks are 10mM.  Make 3 randomized replicates of each plate.
+```
 
 # PickliPy launched from Image Analyst MKII
-This is a convenience approach for GUI launch if you analyze images with PickliPy metadata in Image Analyst. See standalone installation below.
+This is a convenience approach for GUI launch if you analyze images with PickliPy metadata in [Image Analyst MKII](https://www.imageanalyst.net). See standalone installation below.
 
 ## List of pipelines
 * [Assay picklist generator](Assay_picklist_generator.md)
@@ -24,15 +35,15 @@ This is a convenience approach for GUI launch if you analyze images with PickliP
 * [Screening picklist generator](Screening_picklist_generator.md)
 
 ## How to use
-To open and edit *.ips (XML) Image Processing Pipeline files download [Image Analyst MKII for Windows](https://www.imageanalyst.net/downloads/?item=recent/imageanalystMKII64.msi).
-1. Clone this git in Image Analyst MKII by Edit/Download and Manage Pipelines from GitHub. 
-2. Press the "< > Code" button [above in this page](https://github.com/gerencserlab/IA-Cellpose-tools/) and copy the URL of this git.
-3. Paste the URL in the URL field in the Connect to Git window in Image Analyst MKII.
-4. Press Download.
-5. The pipelines deposited here will appear in the middle section of the Pipelines main menu.
-6. Use the Help/Primer in Image Analyst MKII to install Cellpose. PickliPy uses the Cellpose Python environment in Image Analyst MKII.
-7. [Install PickliPy](install_PickliPy.md)
-8. Use the above pipelines to launch PickliPy.Screen or PickliPy.Assay
+1. Download and install [Image Analyst MKII for Windows](https://www.imageanalyst.net/downloads/?item=recent/imageanalystMKII64.msi).
+2. Clone this git in Image Analyst MKII by Edit/Download and Manage Pipelines from GitHub: 
+    1. Press the "< > Code" button [above in this page](https://github.com/gerencserlab/IA-Cellpose-tools/) and copy the URL of this git:
+    2. Paste the URL in the URL field in the Connect to Git window in Image Analyst MKII.
+    3. Press Download.
+    4. The pipelines deposited here will appear in the middle section of the Pipelines main menu.
+3. Use the Help/Primer in Image Analyst MKII to install Cellpose. PickliPy uses the Cellpose Python environment in Image Analyst MKII.
+4. Run the pipeline [Install PickliPy](install_PickliPy.md) to install dependencies.
+5. Use the above pipelines to launch PickliPy.Screen or PickliPy.Assay.
 
 
 ---
