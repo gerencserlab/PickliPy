@@ -23,7 +23,7 @@ Clone this git and open folder in Visual Studio Code with OpenAI Codex extension
 
 Example Prompt:
 ```
-Use picklipy-excel-design-skill to make a design file and run PickliPy.Screen for a 5-point dose resposnse using only compounds from the library that mention autophagy. Add 24 DMSO controls to each plate, evenly distributed. Use center 240 wells only.  The library file is in test_screen\L5300-Mitochondria-Targeted Compound Library-950cpds.sdf. Work in that folder. Use concentrations between 0.5 and 10uM in log steps. The stocks are 10mM.  Make 3 randomized replicates of each plate.
+Use picklipy-excel-design-skill to make a design file and run PickliPy.Screen for a 5-point dose response using only compounds from the library that mention autophagy. Add 24 DMSO controls to each plate, evenly distributed. Use center 240 wells only.  The library file is in test_screen\L5300-Mitochondria-Targeted Compound Library-950cpds.sdf. Work in that folder. Use concentrations between 0.5 and 10uM in log steps. The stocks are 10mM.  Make 3 randomized replicates of each plate.
 ```
 
 # PickliPy launched from Image Analyst MKII
