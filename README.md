@@ -1,6 +1,6 @@
 # PickliPy
 
-PickliPy is a set of command-line and agentic tools that generate **Beckman Coulter Echo 650 or Echo-series** picklists (CSV) and the companion **Plate:Works** helper files (inventory + process lists) from Excel-based experimental designs, using Python.
+PickliPy is a set of command-line and agentic tools that generate **Beckman Coulter Echo 650 or Echo-series** picklists (CSV) and the companion **Plate:Works** helper files (inventory + process lists) from Excel-based experimental designs, using Python. It unifies assay design, validation, randomization, volume management, execution quality control, and analysis metadata in one open workflow that works from bench assays to screening. PickliPy is for both individual laboratories and screening facilities, especially groups that have access to acoustic dispensing but lack a custom LIMS or automation-software team.
 
 ### It supports three workflows:
 - **Assay** – flexible, user-defined plate maps for tool compounds, combinatorics, dose response, and serial additions.
