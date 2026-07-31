@@ -5,17 +5,18 @@ import csv
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence, Tuple
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib import colors as mcolors
 from matplotlib import patheffects as pe
 from matplotlib.cm import ScalarMappable
-from matplotlib.patches import Circle, FancyBboxPatch, Wedge
+from matplotlib.patches import Circle, Polygon, Wedge
 
 
 # -----------------------------------------------------------------------------
@@ -69,7 +70,7 @@ except Exception:  # pragma: no cover - exercised in standalone use
 
 
 # -----------------------------------------------------------------------------
-# Constants / helpers
+# Plate geometry and render constants
 # -----------------------------------------------------------------------------
 
 PLATE_FORMATS: Dict[int, Tuple[int, int]] = {
@@ -92,9 +93,57 @@ class PlateGeometry:
         return [number_to_excel_col(i) for i in range(1, self.rows + 1)]
 
 
+@dataclass(frozen=True)
+class PlatePhysicalSpec:
+    """Physical drawing dimensions in millimeters.
+
+    The A1 offsets are measured from the top-left outside plate corner to the
+    center of well A1. These values are intentionally defined near the top of
+    the file so the plate background can be tuned without adding CLI options.
+    """
+
+    outer_length_mm: float
+    outer_width_mm: float
+    a1_center_x_mm: float
+    a1_center_y_mm: float
+    pitch_x_mm: float
+    pitch_y_mm: float
+    notch_size_mm: float
+    axis_padding_mm: float
+    label_margin_fraction: float = 0.45
+
+
 GEOMETRY_96 = PlateGeometry(96, 8, 12)
 GEOMETRY_384 = PlateGeometry(384, 16, 24)
 
+# Physical plate/background geometry. These are the only geometry constants that
+# should usually need adjustment.
+PLATE_SPEC_96 = PlatePhysicalSpec(
+    outer_length_mm=128.0,
+    outer_width_mm=85.5,
+    a1_center_x_mm=14.3,
+    a1_center_y_mm=11.1,
+    pitch_x_mm=9.0,
+    pitch_y_mm=9.0,
+    notch_size_mm=4.5,
+    axis_padding_mm=2.5,
+)
+
+PLATE_SPEC_384 = PlatePhysicalSpec(
+    outer_length_mm=128.0,
+    outer_width_mm=85.5,
+    a1_center_x_mm=12.1,
+    a1_center_y_mm=9.0,
+    pitch_x_mm=4.5,
+    pitch_y_mm=4.5,
+    notch_size_mm=4.5,
+    axis_padding_mm=2.5,
+)
+
+
+# -----------------------------------------------------------------------------
+# Data models
+# -----------------------------------------------------------------------------
 
 @dataclass(frozen=True)
 class DispenseEvent:
@@ -144,18 +193,29 @@ class VisualizationResult:
 @dataclass(frozen=True)
 class RenderStyle:
     cmap_name: str = "viridis"
+    #black plate
     plate_face: str = "#262626"
     plate_edge: str = "#111111"
+    label_color: str = "#c7c7c7"
+    #PP plate
+    #plate_face: str = "#E7E5D2"
+    #plate_edge: str = "#A8A8A8" 
+    #label_color: str = "#202020"   
+    
+    
     empty_well_face: str = "#d6f0fb"
     empty_well_edge: str = "#7aaec8"
     neutral_multi_fill: str = "#f7fbff"
     path_color: str = "#38d17a"
     path_width: float = 1.9
     visit_marker_size: float = 10.0
+    # Fraction of well pitch. 0.41 keeps numbers and connecting lines visible.
     well_radius: float = 0.41
     multi_inner_radius: float = 0.22
     base_fontsize_96: float = 10.5
     base_fontsize_384: float = 6.2
+    label_fontsize_96: float = 12
+    label_fontsize_384: float = 8 #6.2
 
 
 # -----------------------------------------------------------------------------
@@ -247,6 +307,38 @@ def infer_plate_geometry(wells: Iterable[str], *, override: str | int = "auto") 
 
 
 
+def physical_spec_for_geometry(geometry: PlateGeometry) -> PlatePhysicalSpec:
+    if geometry.wells == 96:
+        return PLATE_SPEC_96
+    if geometry.wells == 384:
+        return PLATE_SPEC_384
+    raise PicklyPyConfigError(f"Unsupported plate geometry: {geometry.wells}-well")
+
+
+
+def plate_edge_margins_mm(geometry: PlateGeometry) -> Mapping[str, float]:
+    """Return distance from outside plate edge to the outer row/column well centers."""
+    spec = physical_spec_for_geometry(geometry)
+    left = spec.a1_center_x_mm
+    right = spec.outer_length_mm - (spec.a1_center_x_mm + (geometry.cols - 1) * spec.pitch_x_mm)
+    top = spec.a1_center_y_mm
+    bottom = spec.outer_width_mm - (spec.a1_center_y_mm + (geometry.rows - 1) * spec.pitch_y_mm)
+    return {"left": left, "right": right, "top": top, "bottom": bottom}
+
+
+
+def well_radius_for_geometry(geometry: PlateGeometry, style: RenderStyle) -> float:
+    spec = physical_spec_for_geometry(geometry)
+    return style.well_radius * min(spec.pitch_x_mm, spec.pitch_y_mm)
+
+
+
+def multi_inner_radius_for_geometry(geometry: PlateGeometry, style: RenderStyle) -> float:
+    spec = physical_spec_for_geometry(geometry)
+    return style.multi_inner_radius * min(spec.pitch_x_mm, spec.pitch_y_mm)
+
+
+
 def well_to_xy(well: str, geometry: PlateGeometry) -> Tuple[float, float]:
     row, col = parse_well_name(well)
     if row > geometry.rows or col > geometry.cols:
@@ -254,16 +346,18 @@ def well_to_xy(well: str, geometry: PlateGeometry) -> Tuple[float, float]:
             f"Well {well!r} does not fit on a {geometry.wells}-well plate "
             f"({geometry.rows}x{geometry.cols})."
         )
-    x = float(col)
-    y = float(geometry.rows - row + 1)
-    return x, y
+    spec = physical_spec_for_geometry(geometry)
+    x = spec.a1_center_x_mm + (col - 1) * spec.pitch_x_mm
+    y = spec.outer_width_mm - (spec.a1_center_y_mm + (row - 1) * spec.pitch_y_mm)
+    return float(x), float(y)
 
 
 
 def figsize_for_geometry(geometry: PlateGeometry) -> Tuple[float, float]:
-    if geometry.wells == 96:
-        return (9.2, 6.8)
-    return (13.0, 9.0)
+    spec = physical_spec_for_geometry(geometry)
+    width_in = 9.2 if geometry.wells == 96 else 13.0
+    height_in = width_in * (spec.outer_width_mm / spec.outer_length_mm)
+    return (width_in, height_in)
 
 
 
@@ -463,46 +557,65 @@ def _text_positions(x: float, y: float, count: int, radius: float) -> List[Tuple
 
 
 def _draw_plate_background(ax, geometry: PlateGeometry, style: RenderStyle) -> None:
-    x0 = 0.35
-    y0 = 0.35
-    width = geometry.cols + 1.05
-    height = geometry.rows + 0.95
-    plate = FancyBboxPatch(
-        (x0, y0),
-        width,
-        height,
-        boxstyle="round,pad=0.03,rounding_size=0.35",
+    spec = physical_spec_for_geometry(geometry)
+    well_radius = well_radius_for_geometry(geometry, style)
+
+    # Outside edge with a notched top-left corner.
+    plate_points = [
+        (0.0, 0.0),
+        (spec.outer_length_mm, 0.0),
+        (spec.outer_length_mm, spec.outer_width_mm),
+        (spec.notch_size_mm, spec.outer_width_mm),
+        (0.0, spec.outer_width_mm - spec.notch_size_mm),
+    ]
+    plate = Polygon(
+        plate_points,
+        closed=True,
         linewidth=2.2,
         edgecolor=style.plate_edge,
         facecolor=style.plate_face,
+        joinstyle="round",
         zorder=0,
     )
     ax.add_patch(plate)
 
+    top_well_center_y = spec.outer_width_mm - spec.a1_center_y_mm
+    top_well_outer_y = top_well_center_y + well_radius
+    col_label_y = top_well_outer_y + max(
+        1.2,
+        (spec.outer_width_mm - top_well_outer_y) * spec.label_margin_fraction,
+    )
+
+    first_well_center_x = spec.a1_center_x_mm
+    first_well_inner_edge_x = first_well_center_x - well_radius
+    row_label_x = max(1.0, first_well_inner_edge_x * spec.label_margin_fraction)
+
     # Column numbers.
     for col in range(1, geometry.cols + 1):
+        x = spec.a1_center_x_mm + (col - 1) * spec.pitch_x_mm
         ax.text(
-            col,
-            geometry.rows + 0.65,
+            x,
+            col_label_y,
             str(col),
             ha="center",
             va="center",
-            color="#c7c7c7",
-            fontsize=8 if geometry.wells == 96 else 6,
+            color=style.label_color,
+            fontsize=style.label_fontsize_384 if geometry.wells == 96 else style.label_fontsize_96,
             fontweight="bold",
             zorder=10,
         )
 
     # Row letters.
     for row in range(1, geometry.rows + 1):
+        y = spec.outer_width_mm - (spec.a1_center_y_mm + (row - 1) * spec.pitch_y_mm)
         ax.text(
-            0.55,
-            geometry.rows - row + 1,
+            row_label_x,
+            y,
             number_to_excel_col(row),
             ha="center",
             va="center",
-            color="#c7c7c7",
-            fontsize=8 if geometry.wells == 96 else 6,
+            color=style.label_color,
+            fontsize=style.label_fontsize_384 if geometry.wells == 96 else style.label_fontsize_96,
             fontweight="bold",
             zorder=10,
         )
@@ -510,12 +623,12 @@ def _draw_plate_background(ax, geometry: PlateGeometry, style: RenderStyle) -> N
     # Base empty wells.
     for row in range(1, geometry.rows + 1):
         for col in range(1, geometry.cols + 1):
-            cx = float(col)
-            cy = float(geometry.rows - row + 1)
+            cx = spec.a1_center_x_mm + (col - 1) * spec.pitch_x_mm
+            cy = spec.outer_width_mm - (spec.a1_center_y_mm + (row - 1) * spec.pitch_y_mm)
             ax.add_patch(
                 Circle(
                     (cx, cy),
-                    radius=style.well_radius,
+                    radius=well_radius,
                     facecolor=style.empty_well_face,
                     edgecolor=style.empty_well_edge,
                     linewidth=1.0,
@@ -557,11 +670,14 @@ def _draw_event_well(
     if not colors:
         return
 
+    well_radius = well_radius_for_geometry(geometry, style)
+    inner_radius = multi_inner_radius_for_geometry(geometry, style)
+
     if len(colors) == 1:
         ax.add_patch(
             Circle(
                 (x, y),
-                radius=style.well_radius * 0.96,
+                radius=well_radius * 0.96,
                 facecolor=colors[0],
                 edgecolor="#0f0f0f",
                 linewidth=1.4,
@@ -573,7 +689,7 @@ def _draw_event_well(
         ax.add_patch(
             Circle(
                 (x, y),
-                radius=style.well_radius * 0.96,
+                radius=well_radius * 0.96,
                 facecolor=_average_rgba(colors),
                 edgecolor="#0f0f0f",
                 linewidth=1.2,
@@ -588,10 +704,10 @@ def _draw_event_well(
             ax.add_patch(
                 Wedge(
                     center=(x, y),
-                    r=style.well_radius * 0.98,
+                    r=well_radius * 0.98,
                     theta1=theta2,
                     theta2=theta1,
-                    width=(style.well_radius - style.multi_inner_radius) * 0.96,
+                    width=(well_radius - inner_radius) * 0.96,
                     facecolor=color,
                     edgecolor="#0f0f0f",
                     linewidth=0.4,
@@ -601,7 +717,7 @@ def _draw_event_well(
         ax.add_patch(
             Circle(
                 (x, y),
-                radius=style.multi_inner_radius,
+                radius=inner_radius,
                 facecolor=style.neutral_multi_fill,
                 edgecolor="#0f0f0f",
                 linewidth=0.8,
@@ -610,7 +726,7 @@ def _draw_event_well(
         )
 
     font_size = text_size_for_geometry(geometry, style)
-    positions = _text_positions(x, y, len(numbers), style.well_radius * 0.33)
+    positions = _text_positions(x, y, len(numbers), well_radius * 0.33)
     for (tx, ty), number in zip(positions, numbers):
         text = ax.text(
             tx,
@@ -639,8 +755,9 @@ def _finish_plate_figure(
     output_path: Path,
     dpi: int,
 ) -> None:
-    ax.set_xlim(0.15, geometry.cols + 1.05)
-    ax.set_ylim(0.15, geometry.rows + 1.05)
+    spec = physical_spec_for_geometry(geometry)
+    ax.set_xlim(-spec.axis_padding_mm, spec.outer_length_mm + spec.axis_padding_mm)
+    ax.set_ylim(-spec.axis_padding_mm, spec.outer_width_mm + spec.axis_padding_mm)
     ax.set_aspect("equal")
     ax.axis("off")
     ax.set_title(title, fontsize=15 if geometry.wells == 96 else 13, fontweight="bold", pad=14)
@@ -701,9 +818,7 @@ def render_destination_plate(
             style=style,
         )
 
-    subtitle = (
-        f"{len(events)} dispense events from {len(set(e.src_plate for e in events))} source plate(s)"
-    )
+    subtitle = f"{len(events)} dispense events from {len(set(e.src_plate for e in events))} source plate(s)"
     _finish_plate_figure(
         fig,
         ax,
@@ -978,5 +1093,5 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     return run_with_user_facing_errors(lambda: _run_cli(args), pause_on_exit=not args.no_pause)
 
 
-if __name__ == "__main__":  # pragma: no cover
+if __name__ == "__main__":
     raise SystemExit(main())
