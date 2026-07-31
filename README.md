@@ -38,8 +38,10 @@ This is a convenience approach for GUI launch if you analyze images with PickliP
 
 ## List of pipelines
 * [Assay picklist generator](Assay_picklist_generator.md)
+* [Blue table picklist generator](Blue_table_picklist_generator.md)
 * [Install PickliPy](install_PickliPy.md)
 * [Screening picklist generator](Screening_picklist_generator.md)
+* [Visualizer](Visualizer.md)
 
 ## How to use
 1. Download and install [Image Analyst MKII for Windows](https://www.imageanalyst.net/downloads/?item=recent/imageanalystMKII64.msi).
@@ -285,4 +287,3 @@ Close any open CSV/TXT files before running or simulating an assay in Plate:Work
 
 ## License / attribution
 CC-BY-NC
-

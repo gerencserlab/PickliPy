@@ -5,7 +5,7 @@ import csv
 import math
 import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
@@ -99,7 +99,7 @@ class PlatePhysicalSpec:
 
     The A1 offsets are measured from the top-left outside plate corner to the
     center of well A1. These values are intentionally defined near the top of
-    the file so the plate background can be tuned without adding CLI options.
+    the file so the plate geometry can be tuned without changing drawing code.
     """
 
     outer_length_mm: float
@@ -193,16 +193,9 @@ class VisualizationResult:
 @dataclass(frozen=True)
 class RenderStyle:
     cmap_name: str = "viridis"
-    #black plate
     plate_face: str = "#262626"
     plate_edge: str = "#111111"
     label_color: str = "#c7c7c7"
-    #PP plate
-    #plate_face: str = "#E7E5D2"
-    #plate_edge: str = "#A8A8A8" 
-    #label_color: str = "#202020"   
-    
-    
     empty_well_face: str = "#d6f0fb"
     empty_well_edge: str = "#7aaec8"
     neutral_multi_fill: str = "#f7fbff"
@@ -218,6 +211,12 @@ class RenderStyle:
     label_fontsize_384: float = 8 #6.2
 
 
+PLATE_COLOR_PALETTES: Mapping[str, Tuple[str, str, str]] = {
+    "black": ("#262626", "#111111", "#c7c7c7"),
+    "white": ("#E7E5D2", "#A8A8A8", "#202020"),
+}
+
+
 # -----------------------------------------------------------------------------
 # Generic helpers
 # -----------------------------------------------------------------------------
@@ -227,6 +226,26 @@ def as_str(value: object) -> str:
     if value is None:
         return ""
     return str(value)
+
+
+def style_for_plate_color(
+    plate_color: str = "black",
+    *,
+    base_style: Optional[RenderStyle] = None,
+) -> RenderStyle:
+    """Apply one of the two supported plate palettes to a render style."""
+    normalized = as_str(plate_color).strip().lower()
+    if normalized not in PLATE_COLOR_PALETTES:
+        raise PicklyPyConfigError(
+            f"Unsupported plate_color: {plate_color!r}. Use 'black' or 'white'."
+        )
+    plate_face, plate_edge, label_color = PLATE_COLOR_PALETTES[normalized]
+    return replace(
+        base_style or RenderStyle(),
+        plate_face=plate_face,
+        plate_edge=plate_edge,
+        label_color=label_color,
+    )
 
 
 
@@ -902,6 +921,7 @@ def visualize_picklist(
     dpi: int = 300,
     cmap_name: str = "viridis",
     color_scope: str = "global",
+    plate_color: str = "black",
     style: Optional[RenderStyle] = None,
 ) -> VisualizationResult:
     """Create source-plate and destination-plate dispense-path images from a PicklyPy picklist CSV.
@@ -925,11 +945,17 @@ def visualize_picklist(
     color_scope:
         'global' uses one gradient across the full picklist so source and destination images share
         the same colors. 'destination' restarts the gradient per destination plate.
+    plate_color:
+        Plate background palette: 'black' (default) or 'white'.
     style:
-        Optional RenderStyle override.
+        Optional RenderStyle override for other rendering settings. The selected plate_color
+        controls its plate face, edge, and row/column label colors.
     """
     parsed = parse_picklist_csv(picklist_csv)
-    style = style or RenderStyle(cmap_name=cmap_name)
+    style = style_for_plate_color(
+        plate_color,
+        base_style=style or RenderStyle(cmap_name=cmap_name),
+    )
     image_format = image_format.lstrip(".").lower()
 
     out_dir = Path(output_dir) if output_dir is not None else parsed.csv_path.with_name(
@@ -1030,6 +1056,7 @@ def _run_cli(args: argparse.Namespace) -> None:
         dpi=args.dpi,
         cmap_name=args.cmap,
         color_scope=args.color_scope,
+        plate_color=args.plate_color,
     )
 
     print(f"Loaded {result.event_count} dispense events.")
@@ -1081,6 +1108,12 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         default="global",
         choices=["global", "destination"],
         help="Use one color gradient across the full picklist ('global') or restart the gradient per destination plate ('destination').",
+    )
+    parser.add_argument(
+        "--plate-color",
+        default="black",
+        choices=["black", "white"],
+        help="Plate background palette (default: black).",
     )
     parser.add_argument("--no-pause", action="store_true", help="Do not wait for Enter before exiting.")
 

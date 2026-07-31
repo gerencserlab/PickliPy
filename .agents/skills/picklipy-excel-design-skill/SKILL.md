@@ -1,6 +1,6 @@
 ---
 name: picklipy-excel-design
-description: Design, generate, validate, and troubleshoot PickliPy.Assay and PickliPy.Screen/PicklPy.Screen Excel workbooks for Echo 650 and PlateWorks picklists. Use for assay-ready plates, dose-response layouts, combinatorics, serial additions, library screening layouts, library shortlisting, destination well blacklisting, SRC/DST/LIB worksheet schemas, source volumes, barcodes, and plate-map design advice.
+description: Design, generate, validate, troubleshoot, and visualize PickliPy.Assay, PickliPy.Screen/PicklPy.Screen, and PickliPy.Bluetable workflows for Echo 650 and PlateWorks picklists. Use for assay-ready plates, dose-response layouts, combinatorics, serial additions, blue-table treatment/definition rows, library screening layouts, library shortlisting, destination well blacklisting, source volumes, barcodes, plate-map design, and dispense-path visualization.
 ---
 
 # PickliPy Excel Design Skill
@@ -35,9 +35,11 @@ Choose `PickliPy.Screen` when the user needs any of the following:
 
 Choose a hybrid plan when a screen requires custom controls or perturbations that are not on every library plate: use `PickliPy.Screen` for the library and `PickliPy.Assay` for the additional tool-plate dispense into the same destination barcodes.
 
+Choose `PickliPy.Bluetable` when each destination plate is described by a 96-well blue-table workbook with up to three addition blocks, one source plate, optional manual additions, and `def` / `veh` helper rows.
+
 ## Core geometry and placement rules
 
-PickliPy workbooks use a 384-well grid unless the user explicitly asks for a 96-well plate. The grid is always 16 rows × 24 columns, rows `A`–`P`, columns `1`–`24`. The interpreted grid starts one cell down and one cell right of the label cell:
+PickliPy Assay and Screen workbooks use a 384-well grid unless the user explicitly asks for a 96-well plate. The grid is always 16 rows × 24 columns, rows `A`–`P`, columns `1`–`24`. The interpreted grid starts one cell down and one cell right of the label cell:
 
 - `Plate Map:` in column A; map cells are immediately below and to the right, i.e. columns B:Y and 16 rows.
 - `Concentrations Map:` in column A; same 16 × 24 geometry.
@@ -129,6 +131,23 @@ Do not use `Concentrations Map:` for a combinatorial section. Put multiple label
 - Serial addition: repeat complete sections; keep the same picklist name to append, or use timepoint-specific picklist names when the experiment must pause between additions.
 - Edge-sensitive live-cell assays: reserve edges for vehicle/blank/control or leave blank; distribute treatment replicates across internal rows/columns.
 - 96-well assay-ready plate: use only `A1:H12` in the 384-style map and leave all other cells blank.
+
+## PickliPy.Bluetable workbook rules
+
+The first worksheet (normally `Plate`) contains three five-column addition blocks in `A:E`, `G:K`, and `M:Q`. Rows beneath the header may be destination-well rows such as `A1`, component definitions marked `def`, or vehicle definitions marked `veh`.
+
+The top treatment/definition area is expandable. Users may insert additional well, `def`, or `veh` rows before the control area. Preserve these column-A control labels because the generator locates all later volume settings relative to them:
+
+- `Starting assay volume (ul)`
+- `Addition paradigm:` immediately below it
+
+Do not rely on fixed Excel row numbers. Relative to `Addition paradigm:`, dilution is in column I on the same row, maximum reservoir volumes for additions 1–3 are in columns C/E/G one row below, and preparation volumes are in columns C/E/G three rows below.
+
+For combined treatment names such as `Glucose+FCCP`, every component except the final component must have a matching `def` row in that addition block. A `veh` row both defines the vehicle treatment and enables automatic vehicle balancing for inventory rows assigned that vehicle type.
+
+## PickliPy.Visualize options
+
+`PickliPy.Visualize.visualize_picklist` renders source- and destination-plate dispense paths. Its `plate_color` option accepts exactly `black` or `white` and defaults to `black`. The command-line equivalent is `--plate-color black|white`. Use the white palette for light-background reports or printing; use the default black palette for the standard dark plate presentation.
 
 ## PickliPy.Screen workbook rules
 

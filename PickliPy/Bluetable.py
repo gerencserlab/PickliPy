@@ -618,9 +618,50 @@ def _grid_index_96(well: str) -> Tuple[int, int]:
     return r - 1, c - 1
 
 
-def _read_cell(ws: openpyxl.worksheet.worksheet.Worksheet, addr: str, *, numeric: bool = False) -> Any:
-    v = ws[addr].value
-    return as_number(v) if numeric else v
+def _find_row_by_col_a_label(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    label: str,
+) -> Optional[int]:
+    """Find a control row by its column-A label, ignoring case/outer spaces."""
+    wanted = label.strip().casefold()
+    for row in range(1, ws.max_row + 1):
+        if as_str(ws.cell(row, 1).value).strip().casefold() == wanted:
+            return row
+    return None
+
+
+def _locate_bluetable_layout(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+) -> Tuple[int, int]:
+    """Return ``(last_input_row, addition_paradigm_row)``.
+
+    Rows may be inserted into the treatment/definition area.  Everything in
+    the volume-calculation area is therefore located relative to either of its
+    stable column-A labels instead of by an absolute Excel row number.
+    """
+    starting_row = _find_row_by_col_a_label(ws, "Starting assay volume (ul)")
+    addition_row = _find_row_by_col_a_label(ws, "Addition paradigm:")
+
+    if starting_row is None and addition_row is None:
+        raise PicklyPyConfigError(
+            "Destination Plate worksheet is missing the column-A label "
+            "'Starting assay volume (ul)' or 'Addition paradigm:'."
+        )
+
+    if addition_row is None:
+        addition_row = int(starting_row) + 1
+    if starting_row is None:
+        starting_row = int(addition_row) - 1
+
+    if addition_row != starting_row + 1:
+        raise PicklyPyConfigError(
+            "Destination Plate worksheet has inconsistent control rows: "
+            "'Addition paradigm:' must immediately follow 'Starting assay volume (ul)'."
+        )
+
+    # The template's warning row immediately precedes the starting-volume row;
+    # input rows end one row before that warning.
+    return starting_row - 2, addition_row
 
 
 def _check_well_label_consistency(
@@ -629,9 +670,11 @@ def _check_well_label_consistency(
     block_starts_1based: Sequence[int] = (1, 7, 13),
     name_offset: int = 1,
     row_min: int = 2,
-    row_max: int = 25,
+    row_max: Optional[int] = None,
 ) -> None:
     """Ensure per-row well label is consistent across addition blocks."""
+    if row_max is None:
+        row_max, _addition_row = _locate_bluetable_layout(ws)
     bad_rows: List[int] = []
     for r in range(row_min, row_max + 1):
         wells: List[str] = []
@@ -720,19 +763,20 @@ def _process_one_bluetable_file(
     dst_barcode = dst_xlsx.stem
     print(f"****** Barcode: {dst_barcode} ******")
 
-    _check_well_label_consistency(ws)
+    last_input_row, addition_row = _locate_bluetable_layout(ws)
+    _check_well_label_consistency(ws, row_max=last_input_row)
 
     wellvolumes = [
-        _read_cell(ws, "C29", numeric=True),
-        _read_cell(ws, "E29", numeric=True),
-        _read_cell(ws, "G29", numeric=True),
+        as_number(ws.cell(addition_row + 1, 3).value),
+        as_number(ws.cell(addition_row + 1, 5).value),
+        as_number(ws.cell(addition_row + 1, 7).value),
     ]
     prepvolumes = [
-        _read_cell(ws, "C31", numeric=True),
-        _read_cell(ws, "E31", numeric=True),
-        _read_cell(ws, "G31", numeric=True),
+        as_number(ws.cell(addition_row + 3, 3).value),
+        as_number(ws.cell(addition_row + 3, 5).value),
+        as_number(ws.cell(addition_row + 3, 7).value),
     ]
-    dilution = _read_cell(ws, "I28", numeric=True)
+    dilution = as_number(ws.cell(addition_row, 9).value)
     if dilution is None:
         dilution = 1.0
     concentrated = float(dilution)
@@ -748,12 +792,16 @@ def _process_one_bluetable_file(
         prepvol = prepvolumes[block_idx] if block_idx < len(prepvolumes) else None
 
         rows_block: List[List[Any]] = []
-        for r in range(2, 26):
+        for r in range(2, last_input_row + 1):
             rows_block.append([ws.cell(r, c0 + 1).value for c0 in cols0])
 
         rows_block = [row for row in rows_block if as_str(row[1]).strip().lower() != "medium"]
 
-        has_any = any(as_str(row[1]).strip() != "" for row in rows_block)
+        has_any = any(
+            as_str(row[1]).strip() != ""
+            and (as_str(row[0]).strip().lower() in {"def", "veh"} or _is_well_name(as_str(row[0])))
+            for row in rows_block
+        )
         if not has_any:
             continue
         if wellvol is None or wellvol <= 0:

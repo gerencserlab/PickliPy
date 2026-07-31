@@ -1,4 +1,4 @@
-# PickliPy Assay and Screen design reference
+# PickliPy Assay, Screen, and Bluetable design reference
 
 This reference summarizes how to design Excel workbooks for PickliPy picklist generation. Use it with `../scripts/picklipy_design_builder.py`.
 
@@ -14,14 +14,22 @@ This reference summarizes how to design Excel workbooks for PickliPy picklist ge
 | A library subset | Screen | Delete/filter `LIB` rows before generation and keep rows sorted by source plate barcode. |
 | QC-based destination well rejection | Screen | Use `DST_Blacklist` with groups and per-destination well lists. |
 | Library + special controls not present on library plates | Hybrid | Screen for the library, Assay for additional controls or perturbagens. |
+| 96-well blue-table with up to three timed additions | Bluetable | One workbook per destination barcode supports well, `def`, and `veh` rows plus manual additions. |
 
 ## Common geometry
 
+- Bluetable uses direct 96-well names (`A1`–`H12`) in its addition blocks.
 - Processed grid size: 16 rows × 24 columns.
 - Rows: `A` through `P`; columns: `1` through `24`.
 - Map data begins one cell below and one cell to the right of the map label.
 - A `Plate Map:` label in cell `A14` means processed destination `A1` is in `B15`, destination `A2` is in `C15`, destination `B1` is in `B16`, etc.
 - For 96-well mode, use only the top-left 8 rows × 12 columns of the 384 grid.
+
+## Bluetable workbook schema
+
+The first worksheet, normally `Plate`, uses addition blocks `A:E`, `G:K`, and `M:Q`. Each block accepts destination-well rows and helper rows whose first cell is `def` or `veh`. The treatment area may grow by inserting rows above the volume-control area.
+
+The generator finds that boundary from `Starting assay volume (ul)` and `Addition paradigm:` in column A, ignoring case and surrounding spaces. Keep the labels adjacent. Relative to `Addition paradigm:`, the dilution factor is in column I on the same row, maximum reservoir volumes are in C/E/G one row below, and preparation volumes are in C/E/G three rows below. Never design against fixed row numbers for these fields.
 
 ## Assay workbook schema
 
