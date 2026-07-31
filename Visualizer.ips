@@ -1,0 +1,89 @@
+<IAPipeline Description="Image Analyst MKII XML 1.0" Version="1240">
+  <Pipeline Version="1240">
+    <Functions>
+      <fRunEXE Caption="Run EXE" ID="0" PID="162" Description="Run EXE">
+        <Caption>Run EXE</Caption>
+        <Position Top="0" Left="0" Height="25" Width="61"/>
+        <Parameters>
+          <filename ID="0" Type="Text" Value="=&quot;&quot;%ProgramDataFolder%cellpose\Scripts\activate&quot;  &amp;&amp; &quot;python.exe&quot;&quot;"/>
+          <arguments ID="1" Type="Text" Value="-m --src-format --dst-format --image-format --dpi --cmap --color-scope  "/>
+          <format ID="2" Type="Text" Value="TIFLZW"/>
+          <way ID="3" Type="Text" Value="Do not export (reuse)"/>
+          <exportsuffix ID="4" Type="Text" Value=""/>
+          <results ID="5" Type="Text" Value=""/>
+          <resultformat ID="6" Type="Text" Value="Dialog default"/>
+          <usetemp ID="7" Type="Bool" Value="No"/>
+          <customtemp ID="8" Type="Text" Value="=%ExecutingPipelineFolder%"/>
+          <deletetemp ID="9" Type="Bool" Value="No"/>
+          <forceclose ID="10" Type="Bool" Value="No"/>
+          <nowait ID="11" Type="Bool" Value="Yes"/>
+          <loopframes ID="12" Type="Bool" Value="No"/>
+          <parallel ID="13" Type="Integer" Value="1" SValue=""/>
+          <runas ID="14" Type="Bool" Value="No"/>
+          <args1 ID="15" Type="Text" Value="PickliPy.Visualize"/>
+          <args2 ID="16" Type="Text" Value="384"/>
+          <args3 ID="17" Type="Text" Value="96"/>
+          <args4 ID="18" Type="Text" Value="png"/>
+          <args5 ID="19" Type="Text" Value="300"/>
+          <args6 ID="20" Type="Text" Value="viridis"/>
+          <args7 ID="21" Type="Text" Value="global"/>
+          <args8 ID="22" Type="Text" Value="C:\0Proj\0Diabetes\Blue table automation\260731\Akos_betacell_smallvolumes_Picklist.csv"/>
+          <args9 ID="23" Type="Text" Value=""/>
+          <args10 ID="24" Type="Text" Value=""/>
+          <args11 ID="25" Type="Text" Value=""/>
+          <args12 ID="26" Type="Text" Value=""/>
+          <args13 ID="27" Type="Text" Value=""/>
+          <args14 ID="28" Type="Text" Value=""/>
+          <args15 ID="29" Type="Text" Value=""/>
+          <args16 ID="30" Type="Text" Value=""/>
+          <args17 ID="31" Type="Text" Value=""/>
+          <args18 ID="32" Type="Text" Value=""/>
+          <args19 ID="33" Type="Text" Value=""/>
+          <args20 ID="34" Type="Text" Value=""/>
+        </Parameters>
+        <Inputs Types="" IDs=""/>
+        <Outputs Types="" IDs=""/>
+      </fRunEXE>
+    </Functions>
+  </Pipeline>
+  <Parameters Version="1240">
+    <Caption>Visualizer</Caption>
+    <DesignVersion>1</DesignVersion>
+    <Description>Press the blue Play P (pipeline) toolbar button to run this pipeline. This pipeline runs the Picklist Visualizer in Python. Results will be saved in a subfolder where the picklist file is.
+
+Picklist generator for acoustic dispensing using Beckman Coulter Echo 650 controlled by Revvity PlateWorks. The Echo picklist defines what volumes to dispense from which source plate barcode / well to which destination plate barcode / well. The goal of this script is to help translating experimental designs as 2-dimensional plate maps into a series of pick commands. The script generates the picklist and accompanying inventory and process files from a plate map and an inventory worksheet in an Excel file. Plate maps allow user control over random-access dispensing one or multiple compounds per destination well, at the desired concentrations. The script supports using multiple source and destination plates, volume checking and distributing larger total volume additions to originate from multiple source wells. Both the destination and source plate will move on the shortest possible path within the instrument. The added volumes are rounded to 2.5nL increments, with warnings if this results in inaccuracy. The current plate maps support 384-well format, our using the top left of the same map for 96-well destination plates.
+
+Citation for PickliPy:
+Varunya M. Kattunga, Steven A. Wrobel, Chad A. Lerner, Victor M. Derycz, Elizabeth B. Stephens, Ian S. Brown, Hao Cheng, Sima Taghizadeh, Josef Byrne, Susan Gross, Susan Schneider, Chatura Senadheera, Asia Davis-Castillo, Shane Vistalli-Alvarado, Elena Goncharova, John C. Newman, Brianna J. Stubbs, Simon Melov, Gordon Lithgow, Lisa M. Ellerby, Julie K. Andersen and Akos A. Gerencser. Advanced Open-source Experimental-Design Tools for Microplate-Based Assays with Acoustic Liquid Handling. BIORXIV/2026/735934</Description>
+    <Parameters>
+      <param ID="0" UID="101784575" Caption="Picklist file name (csv)" Type="Text" Value="" Constraints="" ErrorMessage="" CustomCheck="FileExist" Hint="Path to the picklist CSV created by picklipy">
+        <link Caption="Run EXE::Argument 8 ()" ID="0" paramID="22" paramName="args8"/>
+      </param>
+      <param ID="1" UID="101791114" Caption="Source plate format" Type="Text" Value="384" Constraints="" ErrorMessage="" Hint="Use 384 when only top-left wells are used but the source plate is physically 384-well.">
+        <link Caption="Run EXE::Argument 2 (--src-format)" ID="0" paramID="16" paramName="args2"/>
+      </param>
+      <param ID="2" UID="101791116" Caption="Destination plate format" Type="Text" Value="96" Constraints="" ErrorMessage="" Hint="Use 384 when only top-left wells are used but the source plate is physically 384-well.">
+        <link Caption="Run EXE::Argument 3 (--dst-format)" ID="0" paramID="17" paramName="args3"/>
+      </param>
+      <param ID="3" UID="101791117" Caption="Image format (png, pdf or svg)" Type="Text" Value="png" Constraints="" ErrorMessage="" Hint="Matplotlib output format, usually png, svg, or pdf.">
+        <link Caption="Run EXE::Argument 4 (--image-format)" ID="0" paramID="18" paramName="args4"/>
+      </param>
+      <param ID="4" UID="101791119" Caption="DPI" Type="Text" Value="300" Constraints="" ErrorMessage="" Hint="Output resolution in dots per inch.">
+        <link Caption="Run EXE::Argument 5 (--dpi)" ID="0" paramID="19" paramName="args5"/>
+      </param>
+      <param ID="5" UID="101791120" Caption="Matplotlib colormap name" Type="Text" Value="viridis" Constraints="" ErrorMessage="" Hint="Matplotlib colormap name for dispense order.">
+        <link Caption="Run EXE::Argument 6 (--cmap)" ID="0" paramID="20" paramName="args6"/>
+      </param>
+      <param ID="6" UID="101791121" Caption="Argument 8 (--color-scope)" Type="Text" Value="global" Constraints="" ErrorMessage="" Hint="Use one color gradient across the full picklist ('global') or restart the gradient per destination plate ('destination')">
+        <link Caption="Run EXE::Argument 7 (--color-scope)" ID="0" paramID="21" paramName="args7"/>
+      </param>
+    </Parameters>
+  </Parameters>
+  <Options Version="1240">
+    <usesexcel Value="false"/>
+    <warnrefimage Value="false"/>
+    <warnrefimagemsg Value=""/>
+    <matrixsavedef Value="false"/>
+    <forceshowcmd Value="true"/>
+  </Options>
+</IAPipeline>
