@@ -1,0 +1,30 @@
+{
+  "picklist_name": "ScreenBackfill",
+  "dst_barcodes": ["ScreenPlate_001"],
+  "min_source_volume_ul": 2.5,
+  "header": {
+    "Well volume (ul):": 50
+  },
+  "library_headers": ["Source Well", "Identifier", "Stock concentration", "Plate barcode"],
+  "library_rows": [
+    {"Source Well": "A1", "Identifier": "Cmpd001", "Stock concentration": 10000, "Plate barcode": "LibPlate_A"}
+  ],
+  "controls": [
+    {"source_well": "P23", "compound_name": "vehicle", "stock_concentration": 100, "identifier": "DMSO", "volume_ul": 10, "plate_barcode": "*"}
+  ],
+  "layout": {
+    "type": "slot_layout",
+    "slots": 1,
+    "replicates": 1,
+    "concentrations": [1, 2, 10],
+    "reserve_edges": false,
+    "control_label": null,
+    "positive_label": null,
+    "extra_labels": [
+      {"label": "Backfill", "compound": "vehicle", "concentration": 0.1}
+    ],
+    "group_mode": "all"
+  },
+  "include_blacklist": false,
+  "sort_library_by_barcode": true
+}

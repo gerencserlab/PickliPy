@@ -46,6 +46,13 @@ from .randomization import (
     optimize_plate_well_map,
     seed_from_text,
 )
+from .backfill import (
+    backfill_remainders,
+    normalize_backfill_override,
+    reserved_backfill_row_indices,
+    target_volume_from_mock_concentration,
+    validate_single_workbook_backfill,
+)
 
 
 VERSION = "4.19-python"
@@ -620,6 +627,8 @@ def generate_assay_picklists(
     pause_on_exit: bool = False,
     randomize_wells: bool = False,
     name_column: bool = False,
+    backfill_name: Optional[str] = None,
+    backfill_volume: Optional[float] = None,
 ) -> None:
     """Main API: generate assay picklists and Plate:Works sidecar files."""
     _print_banner()
@@ -659,6 +668,29 @@ def generate_assay_picklists(
 
     additions, all_dst_barcodes = _parse_additions(dst, header.well_volume_ul_default)
 
+    backfill_override = normalize_backfill_override(backfill_name, backfill_volume)
+    reserved_backfill_rows: Dict[int, set[int]] = {}
+    workbook_backfill: Dict[int, Optional[Tuple[str, float]]] = {}
+    for add in additions:
+        plate_grid = _extract_plate_grid(dst, add.plate_map_row)
+        used_labels = [
+            label
+            for grid_row in plate_grid
+            for cell in grid_row
+            for label in split_labels(cell)
+        ]
+        reserved = reserved_backfill_row_indices(add.label_rows, used_labels)
+        reserved_backfill_rows[add.index] = set(reserved)
+        workbook_backfill[add.index] = (
+            None
+            if backfill_override is not None
+            else validate_single_workbook_backfill(
+                add.label_rows,
+                reserved,
+                context=f"Picklist '{add.picklist_name}'",
+            )
+        )
+
     # Survey volumes.
     _apply_survey_to_src(src, xlsx_path.parent, used_source_barcodes=[a.barcode_src for a in additions])
 
@@ -676,6 +708,35 @@ def generate_assay_picklists(
                 f"The {a.barcode_src} barcode does not exist in the SRC worksheet Col F!"
             )
 
+    # Preflight every applicable backfill source before any picklist is written.
+    for add in additions:
+        if _is_grid_empty(_extract_plate_grid(dst, add.plate_map_row)):
+            continue
+        if backfill_override is not None:
+            compound = backfill_override.compound_name
+            workbook_spec = None
+        else:
+            workbook_spec = workbook_backfill.get(add.index)
+            if workbook_spec is None:
+                continue
+            compound, mock_final = workbook_spec
+        source_info = srcr.get(add.barcode_src, {}).get(compound)
+        if source_info is None:
+            raise PicklyPyConfigError(
+                f"Backfill compound '{compound}' is not present on source plate "
+                f"'{add.barcode_src}' for picklist '{add.picklist_name}'."
+            )
+        if workbook_spec is not None:
+            target_volume_from_mock_concentration(
+                well_volume_ul=add.well_volume_ul,
+                stock_concentration=source_info[1],
+                mock_final_concentration=mock_final,
+                context=(
+                    f"Backfill compound '{compound}' on source plate "
+                    f"'{add.barcode_src}'"
+                ),
+            )
+
     src_name = _build_src_name_map(src,name_col = name_column)
     if name_column:
         src_label_to_name = _build_src_label_to_name_map(src)
@@ -688,7 +749,9 @@ def generate_assay_picklists(
     for add in additions:
         missing: List[str] = []
         plate_map = srcr.get(add.barcode_src, {})
-        for row in add.label_rows:
+        for row_index, row in enumerate(add.label_rows):
+            if row_index in reserved_backfill_rows[add.index]:
+                continue
             comp = as_str(row[1]).strip()
             if comp == "":
                 continue
@@ -702,7 +765,9 @@ def generate_assay_picklists(
     compoundlabels: List[Dict[str, str]] = []
     for add in additions:
         label_to_parts: Dict[str, List[str]] = {}
-        for row in add.label_rows:
+        for row_index, row in enumerate(add.label_rows):
+            if row_index in reserved_backfill_rows[add.index]:
+                continue
             lbl = as_str(row[0]).strip()
             comp = as_str(row[1]).strip() 
             
@@ -828,7 +893,9 @@ def generate_assay_picklists(
         # Prepare label list decoding.
         # Map plate-map label -> list of (src_wells_list, stock_conc, final_conc).
         label_defs: Dict[str, List[Tuple[List[str], float, float]]] = {}
-        for row in add.label_rows:
+        for row_index, row in enumerate(add.label_rows):
+            if row_index in reserved_backfill_rows[add.index]:
+                continue
             lbl = as_str(row[0]).strip()
             comp = as_str(row[1]).strip()
             conc = as_number(row[2] if len(row) > 2 else None)
@@ -850,6 +917,58 @@ def generate_assay_picklists(
         # In dosing mode, mimic WL behavior: only the first mapping per label is used.
         if dosing:
             label_defs = {k: [v[0]] for k, v in label_defs.items() if v}
+
+        # Resolve the operational vehicle source and target total transfer
+        # volume. The command/API pair overrides an unused Backfill Labels row.
+        backfill_source: Optional[Tuple[List[str], float]] = None
+        backfill_target_nl: Optional[float] = None
+        if backfill_override is not None:
+            backfill_compound = backfill_override.compound_name
+            backfill_target_nl = backfill_override.target_volume_nl
+        else:
+            workbook_spec = workbook_backfill.get(add.index)
+            if workbook_spec is not None:
+                backfill_compound, mock_final = workbook_spec
+                source_info = srcr.get(add.barcode_src, {}).get(backfill_compound)
+                if source_info is None:
+                    raise PicklyPyConfigError(
+                        f"Backfill compound '{backfill_compound}' is not present on source plate "
+                        f"'{add.barcode_src}' for picklist '{add.picklist_name}'."
+                    )
+                _desired_backfill_nl, backfill_target_nl = (
+                    target_volume_from_mock_concentration(
+                        well_volume_ul=well_volume_ul,
+                        stock_concentration=source_info[1],
+                        mock_final_concentration=mock_final,
+                        context=(
+                            f"Backfill compound '{backfill_compound}' on source plate "
+                            f"'{add.barcode_src}'"
+                        ),
+                    )
+                )
+                _dilute_error_check(
+                    src_plate=add.barcode_src,
+                    src_name_map=src_name[add.barcode_src],
+                    src_well_example=source_info[0][0],
+                    stock=source_info[1],
+                    final=mock_final,
+                    well_volume_ul=well_volume_ul,
+                    rounded_nl=backfill_target_nl,
+                    warnings_flag=warnings,
+                )
+
+        if backfill_target_nl is not None:
+            source_info = srcr.get(add.barcode_src, {}).get(backfill_compound)
+            if source_info is None:
+                raise PicklyPyConfigError(
+                    f"Backfill compound '{backfill_compound}' is not present on source plate "
+                    f"'{add.barcode_src}' for picklist '{add.picklist_name}'."
+                )
+            backfill_source = source_info
+            print(
+                f"Backfill enabled for {add.picklist_name}: {backfill_compound}, "
+                f"target total transfer {backfill_target_nl:g} nL."
+            )
 
         # Determine destination barcodes for this addition.
         dst_barcodes = all_dst_barcodes if add.barcodes_dst == ["*"] else add.barcodes_dst
@@ -976,6 +1095,16 @@ def generate_assay_picklists(
                             warnings_flag=warnings,
                         )
                         events.append((dstwell, src_wells, vol_nl))
+
+            if backfill_source is not None and backfill_target_nl is not None:
+                backfill_wells, _backfill_stock = backfill_source
+                events.extend(
+                    (dstwell, backfill_wells, volume_nl)
+                    for dstwell, volume_nl in backfill_remainders(
+                        events,
+                        backfill_target_nl,
+                    )
+                )
 
             # Group by candidate source wells list (compound).
             grouped: Dict[Tuple[str, ...], List[Tuple[str, List[str], float]]] = {}
@@ -1234,13 +1363,53 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
         )
     )
+    parser.add_argument(
+        "--backfill_name",
+        "--backfill-name",
+        dest="backfill_name",
+        nargs="?",
+        const=None,
+        default=None,
+        metavar="COMPOUND",
+        help=(
+            "SRC compound to use for operational backfill. Must be supplied together with "
+            "--backfill_volume and overrides an unused Backfill row in the Labels table. "
+            "If both backfill options are present without values, they are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--backfill_volume",
+        "--backfill-volume",
+        dest="backfill_volume",
+        type=float,
+        nargs="?",
+        const=None,
+        default=None,
+        metavar="NL",
+        help=(
+            "Target total transfer volume per treated destination well, in nL. "
+            "Must be supplied together with --backfill_name. If both backfill "
+            "options are present without values, they are ignored."
+        ),
+    )
 
     args = parser.parse_args(list(argv) if argv is not None else None)
+
+    generate_kwargs: Dict[str, Any] = {
+        "randomize_wells": args.randomize_wells,
+        "name_column": args.name_column,
+    }
+    if args.backfill_name is not None or args.backfill_volume is not None:
+        generate_kwargs["backfill_name"] = args.backfill_name
+        generate_kwargs["backfill_volume"] = args.backfill_volume
 
     # Mimic the original Wolfram script's behavior: pause at the end unless the
     # user explicitly opts out.
     return run_with_user_facing_errors(
-        lambda: generate_assay_picklists(args.xlsx, randomize_wells=args.randomize_wells, name_column=args.name_column),
+        lambda: generate_assay_picklists(
+            args.xlsx,
+            **generate_kwargs,
+        ),
         pause_on_exit=not args.no_pause,
     )
 

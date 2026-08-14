@@ -68,6 +68,32 @@ The stock and final concentrations must use the same unit. The unit column is in
 
 Use `python scripts/picklipy_design_builder.py estimate-volume ...` for quick volume checks.
 
+### Operational backfill
+
+Use native backfill to equalize total Echo transfer volume without placing a vehicle label in every treated map cell. Add exactly one unused Labels-table row:
+
+| Labels | Compounds | Concentrations |
+|---|---|---|
+| `Backfill` | exact vehicle compound from `SRC` | mock final concentration |
+
+`Backfill` is case-insensitive only for recognizing this reserved row. It is reserved only when no case variant of `backfill` appears in that section's `Plate Map:`; when used in the map, it remains an ordinary treatment label. The mock final and the vehicle stock use the same units. PickliPy derives the target total transfer with the normal dilution formula, then adds `target − sum(already-rounded normal transfers)` from the vehicle source.
+
+- Top up only wells with at least one positive normal compound transfer.
+- Do not fill blank, unresolved, blacklisted, or zero-only wells.
+- Add nothing when a well already receives the target volume or more.
+- Resolve the vehicle by exact `SRC` compound label and apply normal source minimum-volume checks. Screen uses the first resolved source plate in source order and switches among equivalent vehicle wells on that plate.
+- In Screen, sum normal events across every contributing source plate before backfill. In Assay, each addition section is balanced independently; avoid overlapping same-picklist sections with native backfill unless section-local balancing is intentional.
+- Keep native backfill operational: it appears in the Echo picklist and source-volume accounting, but not in treatment labels, treatment signatures, merge rows, or compound/concentration condition maps. With randomization enabled, its destination follows the randomized normal treatment.
+
+The paired CLI override takes precedence over the workbook row. Its volume is the target total per treated well, not the amount of vehicle to add, and is normalized to the Echo 2.5 nL increment:
+
+```bash
+python -m PickliPy.Assay -f assay.xlsx --backfill_name vehicle --backfill_volume 100 --no-pause
+python -m PickliPy.Screen -f screen.xlsx --backfill_name vehicle --backfill_volume 100 --no-pause
+```
+
+Both underscore and hyphen option spellings are accepted. Supply both name and volume or neither. For fixed-argument pipeline compatibility, Assay and Screen also accept both option names without values and treat that bare pair as absent; it does not override a workbook Backfill row. See `references/picklipy_schema_and_design.md` for the full contract and `references/troubleshooting.md` for failure modes.
+
 ## PickliPy.Assay workbook rules
 
 The Assay workbook has `SRC` as the first worksheet and `DST` as the second worksheet.
@@ -200,10 +226,12 @@ The `Labels` list maps each plate-map label to an inventory item label and final
 Screen runtime randomization is opt-in:
 
 ```bash
-python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause
+python -m PickliPy.Screen -f design.xlsx --randomize-wells true --no-pause
 ```
 
-`-r` and `--randomize_wells` are equivalent switch names. With randomization enabled:
+Screen accepts `-f/--file` like Assay. For compatibility, the legacy positional
+design-file argument remains valid when `-f/--file` is omitted. `-r` and
+`--randomize_wells` are equivalent switch names. With randomization enabled:
 
 - Each destination barcode is randomized independently with a deterministic seed derived from the design-file basename and destination barcode.
 - Only wells with actual resolved dispenses are permuted, so empty slots on a partial final plate remain empty and the used-well set is unchanged.
@@ -259,11 +287,11 @@ Use the group map to mark positions available for blacklist compaction, leaving 
 ## Recommended workflow for Codex
 
 1. Interpret the user’s experimental goal and choose Assay, Screen, or hybrid.
-2. Identify destination format, well volume, source plate format, minimum source volume, source stocks, destination barcodes, controls, number of replicates, whether runtime randomization is wanted, required `Layout:` boundaries or pinned wells, and whether QC blacklisting is needed.
+2. Identify destination format, well volume, source plate format, minimum source volume, source stocks, destination barcodes, controls, number of replicates, whether operational backfill is wanted and its target/vehicle, whether runtime randomization is wanted, required `Layout:` boundaries or pinned wells, and whether QC blacklisting is needed.
 3. Propose the plate layout in words and identify any tradeoffs.
 4. Use `scripts/picklipy_design_builder.py` to create a workbook when the user wants an actual `.xlsx` design file.
 5. Run the helper’s `validate` command on generated files.
-6. In the final response, report which sheets and design sections were created, what assumptions were used, and any warnings such as concentration rounding, insufficient destination barcodes, source-volume risk, or library sorting constraints.
+6. In the final response, report which sheets and design sections were created, what assumptions were used, and any warnings such as backfill scope/rounding, concentration rounding, insufficient destination barcodes, source-volume risk, or library sorting constraints.
 
 ## Helper script commands
 
@@ -274,6 +302,8 @@ python scripts/picklipy_design_builder.py assay-demo --output assay_demo.xlsx
 python scripts/picklipy_design_builder.py screen-demo --output screen_demo.xlsx --slots 77 --dst-barcodes Plate1,Plate2,Plate3
 python scripts/picklipy_design_builder.py assay-from-spec examples/assay_dose_response_spec.json --output assay_from_spec.xlsx
 python scripts/picklipy_design_builder.py screen-from-spec examples/screen_shortlist_spec.json --output screen_from_spec.xlsx
+python scripts/picklipy_design_builder.py assay-from-spec examples/assay_backfill_spec.json --output assay_backfill.xlsx
+python scripts/picklipy_design_builder.py screen-from-spec examples/screen_backfill_spec.json --output screen_backfill.xlsx
 python scripts/picklipy_design_builder.py validate assay_from_spec.xlsx --mode assay
 python scripts/picklipy_design_builder.py validate screen_from_spec.xlsx --mode screen
 python scripts/picklipy_design_builder.py estimate-volume --well-volume-ul 50 --stock 2000 --final 1

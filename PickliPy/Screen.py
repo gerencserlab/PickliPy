@@ -39,6 +39,13 @@ from .common import (
     well_name
 )
 from .randomization import optimize_plate_well_map, seed_from_text
+from .backfill import (
+    backfill_remainders,
+    normalize_backfill_override,
+    reserved_backfill_row_indices,
+    target_volume_from_mock_concentration,
+    validate_single_workbook_backfill,
+)
 
 
 @dataclass
@@ -370,6 +377,8 @@ def generate_screening_picklist(
     xlsx_path: str | Path,
     *,
     randomize_wells: bool = False,
+    backfill_name: Optional[str] = None,
+    backfill_volume: Optional[float] = None,
 ) -> None:
     """Generate screening picklists and metadata files.
 
@@ -384,6 +393,7 @@ def generate_screening_picklist(
 
     src, dst, lib, blk = _load_design_sheets(xlsx_path)
     header = _parse_header(dst, src)
+    backfill_override = normalize_backfill_override(backfill_name, backfill_volume)
 
     # Survey volumes (optional)
     survey = load_survey_volumes(xlsx_path.parent)
@@ -439,7 +449,7 @@ def generate_screening_picklist(
 
     # Labels table starts at labels_row+1 and runs until blank in col A.
     labellists00: List[List[List[Any]]] = [[]]
-    labels_data: List[List[Any]] = []
+    labels_data_raw: List[List[Any]] = []
     r = labels_row + 1
     while r < len(dst):
         key = as_str(dst[r][0])
@@ -449,13 +459,83 @@ def generate_screening_picklist(
         label = as_str(row[0])
         compound = as_str(row[1]) if len(row) > 1 else ""
         conc = row[2] if len(row) > 2 else ""
-        # Remove 0.0 concentration rows (feature in v6.x).
-        conc_num = as_number(conc)
-        if conc_num is not None and float(conc_num) == 0.0:
-            r += 1
-            continue
-        labels_data.append([label, compound, conc])
+        labels_data_raw.append([label, compound, conc])
         r += 1
+
+    plate_map_labels = [
+        label
+        for _well, label_cell in b0
+        for label in split_labels(label_cell)
+    ]
+    reserved_indices = reserved_backfill_row_indices(
+        labels_data_raw,
+        plate_map_labels,
+    )
+    workbook_backfill = (
+        None
+        if backfill_override is not None
+        else validate_single_workbook_backfill(
+            labels_data_raw,
+            reserved_indices,
+            context="Screen design",
+        )
+    )
+    configured_backfill_compound = (
+        backfill_override.compound_name
+        if backfill_override is not None
+        else (workbook_backfill[0] if workbook_backfill is not None else None)
+    )
+    explicit_backfill_wells: set[str] = set()
+    configured_backfill_stock: Optional[float] = None
+    if configured_backfill_compound is not None:
+        explicit_backfill_wells = {
+            as_str(row[0]).strip()
+            for row in src[1:]
+            if len(row) > 1
+            and as_str(row[1]).strip() == configured_backfill_compound
+            and as_str(row[0]).strip() != ""
+            and not as_str(row[0]).strip().startswith("@")
+        }
+        if not explicit_backfill_wells:
+            raise PicklyPyConfigError(
+                f"Backfill compound '{configured_backfill_compound}' must be present in "
+                "an explicit SRC row with a concrete source well."
+            )
+        if workbook_backfill is not None:
+            configured_stocks: set[float] = set()
+            for row in src[1:]:
+                if (
+                    len(row) <= 2
+                    or as_str(row[1]).strip() != configured_backfill_compound
+                    or as_str(row[0]).strip() not in explicit_backfill_wells
+                ):
+                    continue
+                stock = as_number(row[2])
+                if stock is None or not math.isfinite(float(stock)) or float(stock) <= 0:
+                    raise PicklyPyConfigError(
+                        f"Every explicit SRC row for Backfill compound "
+                        f"'{configured_backfill_compound}' must have a positive finite "
+                        "stock concentration."
+                    )
+                configured_stocks.add(float(stock))
+            if len(configured_stocks) != 1:
+                raise PicklyPyConfigError(
+                    f"Backfill compound '{configured_backfill_compound}' must have one "
+                    "consistent positive stock concentration across its explicit SRC rows."
+                )
+            configured_backfill_stock = next(iter(configured_stocks))
+
+    # Unused Backfill rows are operational configuration. All other 0.0
+    # concentration rows retain the legacy Screen behavior and are removed.
+    reserved_index_set = set(reserved_indices)
+    labels_data: List[List[Any]] = []
+    for row_index, row in enumerate(labels_data_raw):
+        if row_index in reserved_index_set:
+            continue
+        conc_num = as_number(row[2] if len(row) > 2 else None)
+        if conc_num is not None and float(conc_num) == 0.0:
+            continue
+        labels_data.append(row)
     labellists00[0] = labels_data
 
     if not labels_data:
@@ -1004,16 +1084,17 @@ def generate_screening_picklist(
             )
         table_merge_rows_blk.extend(clname_blk_entries)
 
-        # Now generate dispenses per source plate
+        # Plan normal dispenses for every source plate first. Backfill must use
+        # the sum across all source plates, but is inserted into one existing
+        # source-plate plan so Plate:Works never has to revisit a source plate.
+        event_plans: List[
+            Tuple[
+                List[Tuple[str, List[str], float]],
+                List[Tuple[str, str, float]],
+            ]
+        ] = []
+        normal_events_all: List[Tuple[str, List[str], float]] = []
         for plate_i, plate in enumerate(barcodes_src_ordered):
-            print(f"****** {header.picklist_name}.csv ******")
-            loopsrc.append(plate)
-            loopdst.append(barcode_dst)
-
-            print(f"Dispensing from: {plate}")
-            print(f"Dispensing into: {barcode_dst}")
-
-            # Build dispense events for this source plate
             label_defs = {}
             for lab, srcinfo, final in labellists_by_src[plate_i]:
                 label_defs.setdefault(lab, []).append((srcinfo, final))
@@ -1044,6 +1125,97 @@ def generate_screening_picklist(
                     # Merge table / plate map metadata uses first source well -> identifier
                     ident = src_name.get(plate, {}).get(wells[0], wells[0])
                     clname_events.append((dstwell, ident, final))
+
+            event_plans.append((cl_events, clname_events))
+            normal_events_all.extend(cl_events)
+
+        active_backfill_compound: Optional[str] = None
+        active_backfill_target_nl: Optional[float] = None
+        if backfill_override is not None:
+            active_backfill_compound = backfill_override.compound_name
+            active_backfill_target_nl = backfill_override.target_volume_nl
+        elif workbook_backfill is not None:
+            active_backfill_compound, mock_final = workbook_backfill
+
+        if active_backfill_compound is not None:
+            source_matches: List[
+                Tuple[int, str, Tuple[List[str], float, int]]
+            ] = []
+            for plate_i, plate in enumerate(barcodes_src_ordered):
+                source_info = srcr.get(plate, {}).get(active_backfill_compound)
+                if source_info is not None:
+                    explicit_wells = [
+                        well
+                        for well in source_info[0]
+                        if well in explicit_backfill_wells
+                    ]
+                    if explicit_wells:
+                        source_matches.append(
+                            (
+                                plate_i,
+                                plate,
+                                (explicit_wells, source_info[1], source_info[2]),
+                            )
+                        )
+            if not source_matches:
+                raise PicklyPyConfigError(
+                    f"Backfill compound '{active_backfill_compound}' is not present in the "
+                    f"resolved SRC inventory for destination plate '{barcode_dst}'."
+                )
+
+            backfill_plate_i, backfill_plate, backfill_source = source_matches[0]
+            backfill_wells, backfill_stock, _backfill_libi = backfill_source
+            if active_backfill_target_nl is None:
+                if configured_backfill_stock is None:
+                    raise PicklyPyConfigError(
+                        f"Backfill compound '{active_backfill_compound}' on source plate "
+                        f"'{backfill_plate}' is missing its validated stock concentration."
+                    )
+                backfill_stock = configured_backfill_stock
+                desired_nl, active_backfill_target_nl = (
+                    target_volume_from_mock_concentration(
+                        well_volume_ul=header.well_volume_ul,
+                        stock_concentration=backfill_stock,
+                        mock_final_concentration=mock_final,
+                        context=(
+                            f"Backfill compound '{active_backfill_compound}' on source plate "
+                            f"'{backfill_plate}'"
+                        ),
+                    )
+                )
+                if abs(desired_nl - active_backfill_target_nl) / abs(desired_nl) > 0.1:
+                    print(
+                        "Warning: Significant rounding error for Backfill target! "
+                        f"Compound: {active_backfill_compound} Stock: {backfill_stock} "
+                        f"Mock final: {mock_final} Desired volume: {desired_nl} "
+                        f"Possible volume: {active_backfill_target_nl}"
+                    )
+                    warnings = True
+
+            topups = backfill_remainders(
+                normal_events_all,
+                active_backfill_target_nl,
+            )
+            event_plans[backfill_plate_i][0].extend(
+                (dstwell, backfill_wells, volume_nl)
+                for dstwell, volume_nl in topups
+            )
+            print(
+                f"Backfill enabled for {barcode_dst}: {active_backfill_compound} from "
+                f"{backfill_plate}, target total transfer {active_backfill_target_nl:g} nL "
+                f"({len(topups)} wells topped up)."
+            )
+
+        # Generate metadata and picklist rows in the original source-plate order.
+        for plate_i, plate in enumerate(barcodes_src_ordered):
+            cl_events, clname_events = event_plans[plate_i]
+
+            print(f"****** {header.picklist_name}.csv ******")
+            loopsrc.append(plate)
+            loopdst.append(barcode_dst)
+
+            print(f"Dispensing from: {plate}")
+            print(f"Dispensing into: {barcode_dst}")
 
             # Merge table associations + update conditionlabels
             for dstwell, ident, final in clname_events:
@@ -1233,7 +1405,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description="PicklyPy.Screen - generate screening picklists from SRC/DST/LIB worksheets"
     )
-    parser.add_argument("xlsx", help="Path to the design Excel file")
+    parser.add_argument(
+        "xlsx",
+        nargs="?",
+        help="Path to the design Excel file (legacy positional form).",
+    )
+    parser.add_argument(
+        "-f",
+        "--file",
+        dest="xlsx_file",
+        metavar="XLSX",
+        help="Path to the design Excel file (preferred; matches PickliPy.Assay).",
+    )
 
     parser.add_argument(
         "-r",
@@ -1255,15 +1438,61 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         action="store_true",
         help="Do not wait for Enter before exiting on error (useful for pipelines).",
     )
+    parser.add_argument(
+        "--backfill_name",
+        "--backfill-name",
+        dest="backfill_name",
+        nargs="?",
+        const=None,
+        default=None,
+        metavar="COMPOUND",
+        help=(
+            "SRC compound to use for operational backfill. Must be supplied together with "
+            "--backfill_volume and overrides an unused Backfill row in the Labels table. "
+            "If both backfill options are present without values, they are ignored."
+        ),
+    )
+    parser.add_argument(
+        "--backfill_volume",
+        "--backfill-volume",
+        dest="backfill_volume",
+        type=float,
+        nargs="?",
+        const=None,
+        default=None,
+        metavar="NL",
+        help=(
+            "Target total transfer volume per treated destination well, in nL. "
+            "Must be supplied together with --backfill_name. If both backfill "
+            "options are present without values, they are ignored."
+        ),
+    )
 
     args = parser.parse_args(argv)
 
+    if args.xlsx_file is not None and args.xlsx is not None:
+        parser.error(
+            "provide the design file either positionally or with -f/--file, not both"
+        )
+    xlsx_path = args.xlsx_file if args.xlsx_file is not None else args.xlsx
+    if xlsx_path is None:
+        parser.error(
+            "a design Excel file is required; provide it with -f/--file or positionally"
+        )
+
     from .common import run_with_user_facing_errors
+
+    generate_kwargs: Dict[str, Any] = {
+        "randomize_wells": args.randomize_wells,
+    }
+    if args.backfill_name is not None or args.backfill_volume is not None:
+        generate_kwargs["backfill_name"] = args.backfill_name
+        generate_kwargs["backfill_volume"] = args.backfill_volume
 
     return run_with_user_facing_errors(
         lambda: generate_screening_picklist(
-            args.xlsx,
-            randomize_wells=args.randomize_wells,
+            xlsx_path,
+            **generate_kwargs,
         ),
         pause_on_exit=not args.no_pause,
     )

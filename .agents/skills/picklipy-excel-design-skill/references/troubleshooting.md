@@ -61,6 +61,39 @@ Fix:
 
 - Use a more concentrated stock, a different source plate type/method, or a generator/method version that explicitly splits large dispenses.
 
+## Backfill is missing or applied to unexpected wells
+
+Cause:
+
+- `Backfill` appears as a case-insensitive token in the `Plate Map:`, so it is an ordinary treatment label rather than reserved configuration.
+- The well has no positive normal transfer, or its rounded normal-transfer total already equals/exceeds the target.
+- A Screen slot is unresolved on the partial final plate, or the physical well is blacklisted.
+- An Assay design uses overlapping same-picklist sections; backfill is calculated independently in each section.
+
+Fix:
+
+- Keep exactly one `Backfill | vehicle | mock final` row in `Labels` and keep that label out of the map.
+- Remember that `--backfill_volume` is the target total in nL, not a fixed vehicle amount.
+- Sum the rounded normal transfers at the generated destination coordinates when auditing the remainder.
+- Put native Assay backfill only in the intended balancing section or keep backfilled sections spatially disjoint.
+
+## Backfill configuration error or out of volume
+
+Cause:
+
+- More than one unused Backfill row is present.
+- The vehicle name does not exactly match a compound in the active `SRC` inventory.
+- Mock final or stock is missing, nonpositive, or nonfinite; the derived target rounds to 0 nL.
+- Only one of `--backfill_name` and `--backfill_volume` was supplied.
+- The vehicle source would fall below the minimum source volume after top-ups.
+
+Fix:
+
+- Keep one reserved row, use consistent concentration units, and validate the derived target with `estimate-volume`.
+- Supply both CLI arguments and use the compound label from SRC column B.
+- Increase vehicle source volume or add equivalent source wells with the same stock concentration.
+- Treat native backfill as operational: it is visible in the Echo picklist and source accounting, but intentionally absent from treatment merge/condition metadata.
+
 ## Screen library dispenses wrong plate order
 
 Cause:
@@ -108,7 +141,7 @@ Cause:
 
 Fix:
 
-- Run `python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause` (or use `-r true` / `--randomize_wells true`).
+- Run `python -m PickliPy.Screen -f design.xlsx --randomize-wells true --no-pause` (or use `-r true` / `--randomize_wells true`). The legacy positional design path remains valid only when `-f/--file` is omitted.
 - Remember that only actual post-blacklist, LIB-resolved dispenses are candidates; empty final-plate slots do not become used.
 - The seed is deterministic from the workbook basename and destination barcode, so rerunning the same design intentionally reproduces the same placement.
 

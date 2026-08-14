@@ -93,14 +93,17 @@ Run the operation that matches your workbook/workflow:
 ### Assay
 
 ```bash
-python -m PickliPy.Assay /path/to/picklist-assay.xlsx
+python -m PickliPy.Assay -f /path/to/picklist-assay.xlsx
 ```
 
 ### Screen
 
 ```bash
-python -m PickliPy.Screen /path/to/picklist-screening.xlsx
+python -m PickliPy.Screen -f /path/to/picklist-screening.xlsx
 ```
+
+For compatibility with existing pipelines, Screen also accepts the design file
+as its positional argument when `-f/--file` is omitted.
 
 ### Bluetable
 

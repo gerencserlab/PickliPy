@@ -579,6 +579,7 @@ def make_screen_slot_layout(
     group_mode: str = "all",
     randomization_layout_mode: str = "none",
     pin_controls_for_randomization: bool = True,
+    extra_labels: Optional[Sequence[Mapping[str, Any]]] = None,
 ) -> ScreenLayout:
     if slots < 1:
         raise ValueError("slots must be >= 1")
@@ -630,6 +631,13 @@ def make_screen_slot_layout(
                 r, c = parse_well(wells[idx])
                 plate_map[r - 1][c - 1] = label
                 idx += 1
+
+    # Extra unused rows can carry operational configuration such as
+    # Backfill | vehicle | mock final concentration.
+    for raw_label in extra_labels or []:
+        row = dict(raw_label)
+        safe_label(as_str(row.get("label", "")))
+        labels.append(row)
 
     # Final row is the blacklist fill label.
     if fill_label:
@@ -903,6 +911,72 @@ def read_labels_table(ws: openpyxl.worksheet.worksheet.Worksheet, labels_row: in
     return rows
 
 
+def unused_backfill_rows(
+    label_rows: Sequence[Mapping[str, Any]],
+    used_labels: Iterable[str],
+) -> List[Mapping[str, Any]]:
+    """Mirror production's case-insensitive reserved Backfill-row rule."""
+
+    if any(as_str(label).strip().casefold() == "backfill" for label in used_labels):
+        return []
+    return [
+        row
+        for row in label_rows
+        if as_str(row.get("label", "")).strip().casefold() == "backfill"
+    ]
+
+
+def worksheet_well_volume_ul(
+    ws: openpyxl.worksheet.worksheet.Worksheet,
+    *,
+    start_row: int = 1,
+    end_row: Optional[int] = None,
+) -> Optional[float]:
+    end = ws.max_row if end_row is None else min(end_row, ws.max_row)
+    for row in range(start_row, end + 1):
+        key = as_str(ws.cell(row, 1).value).strip().casefold()
+        if key in {"well volume (ul):", "well volume (µl):"}:
+            return as_number(ws.cell(row, 2).value)
+    return None
+
+
+def validate_backfill_target(
+    *,
+    context: str,
+    mock_final: Any,
+    stock: Optional[float],
+    well_volume_ul: Optional[float],
+) -> List[str]:
+    mock = as_number(mock_final)
+    if mock is None or not math.isfinite(mock) or mock <= 0:
+        raise ValidationError(
+            f"{context}: unused Backfill row needs a positive finite mock final concentration"
+        )
+    if stock is None or not math.isfinite(stock) or stock <= 0:
+        raise ValidationError(
+            f"{context}: Backfill source needs a positive finite stock concentration"
+        )
+    if well_volume_ul is None or not math.isfinite(well_volume_ul) or well_volume_ul <= 0:
+        raise ValidationError(
+            f"{context}: a positive destination well volume is required to calculate Backfill"
+        )
+    desired_nl = 1000.0 * well_volume_ul * mock / stock
+    if not math.isfinite(desired_nl) or desired_nl <= 0:
+        raise ValidationError(
+            f"{context}: Backfill calculation produces a non-finite or nonpositive target volume"
+        )
+    estimate = estimate_transfer_volume(
+        well_volume_ul=well_volume_ul,
+        stock_concentration=stock,
+        final_concentration=mock,
+    )
+    if estimate.rounded_nl <= 0:
+        raise ValidationError(
+            f"{context}: Backfill target rounds to 0 nL at the Echo 2.5 nL increment"
+        )
+    return [f"{context}: Backfill {warning}" for warning in estimate.warnings]
+
+
 def validate_assay(path: str | Path) -> List[str]:
     wb = load_workbook(path, data_only=True)
     if len(wb.worksheets) < 2:
@@ -957,6 +1031,12 @@ def validate_assay(path: str | Path) -> List[str]:
         for label in used:
             safe_label(label)
 
+        reserved_rows = unused_backfill_rows(rows, used)
+        if len(reserved_rows) > 1:
+            raise ValidationError(
+                f"Plate Map at row {pm_row} has more than one unused Backfill row"
+            )
+
         # Find Barcode_SRC between plate-map and labels table.
         barcode_src = None
         for r in range(pm_row + 1, labels_row):
@@ -970,6 +1050,24 @@ def validate_assay(path: str | Path) -> List[str]:
                     raise ValidationError(
                         f"Compound {comp!r} in Labels table for source {barcode_src!r} is absent from SRC"
                     )
+            if reserved_rows:
+                backfill_row = reserved_rows[0]
+                compound = as_str(backfill_row["compound"]).strip()
+                section_well_volume = worksheet_well_volume_ul(
+                    ws_dst,
+                    start_row=pm_row + 1,
+                    end_row=labels_row - 1,
+                )
+                if section_well_volume is None:
+                    section_well_volume = worksheet_well_volume_ul(ws_dst)
+                warnings.extend(
+                    validate_backfill_target(
+                        context=f"Plate Map at row {pm_row}",
+                        mock_final=backfill_row["concentration"],
+                        stock=compound_stock.get((barcode_src, compound)),
+                        well_volume_ul=section_well_volume,
+                    )
+                )
         else:
             warnings.append(f"Plate Map at row {pm_row}: Barcode_SRC: not found")
 
@@ -1008,6 +1106,45 @@ def validate_screen(path: str | Path) -> List[str]:
     missing = sorted(used - defined)
     if missing:
         raise ValidationError(f"Screen Plate Map has labels missing from Labels table: {missing}")
+
+    reserved_rows = unused_backfill_rows(label_rows, used)
+    if len(reserved_rows) > 1:
+        raise ValidationError("Screen Labels table has more than one unused Backfill row")
+    if reserved_rows:
+        backfill_row = reserved_rows[0]
+        compound = as_str(backfill_row["compound"]).strip()
+        matching_rows = [
+            row
+            for row in range(2, ws_src.max_row + 1)
+            if as_str(ws_src.cell(row, 2).value).strip() == compound
+            and as_str(ws_src.cell(row, 1).value).strip() != ""
+            and not as_str(ws_src.cell(row, 1).value).strip().startswith("@")
+        ]
+        if not matching_rows:
+            raise ValidationError(
+                f"Screen Backfill compound {compound!r} is absent from explicit SRC rows"
+            )
+        matching_stocks: set[float] = set()
+        for row in matching_rows:
+            stock = as_number(ws_src.cell(row, 3).value)
+            if stock is None or not math.isfinite(stock) or stock <= 0:
+                raise ValidationError(
+                    f"Every explicit SRC row for Screen Backfill compound {compound!r} "
+                    "needs a positive finite stock concentration"
+                )
+            matching_stocks.add(float(stock))
+        if len(matching_stocks) > 1:
+            raise ValidationError(
+                f"Screen Backfill compound {compound!r} has inconsistent SRC stock concentrations"
+            )
+        warnings.extend(
+            validate_backfill_target(
+                context="Screen design",
+                mock_final=backfill_row["concentration"],
+                stock=next(iter(matching_stocks)),
+                well_volume_ul=worksheet_well_volume_ul(ws_dst),
+            )
+        )
 
     # Barcode list.
     barcode_dst = None
@@ -1330,6 +1467,7 @@ def cmd_screen_from_spec(args: argparse.Namespace) -> None:
                 "pin_controls_for_randomization",
                 True,
             ),
+            extra_labels=layout_spec.get("extra_labels", []),
         )
     elif layout_spec:
         randomization_layout_value = layout_spec.get(

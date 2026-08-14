@@ -1,0 +1,31 @@
+{
+  "min_source_volume_ul": 2.5,
+  "header": {
+    "Well volume (ul):": 50
+  },
+  "source_rows": [
+    {"source_well": "A1", "compound_name": "Drug", "stock_concentration": 10000, "unit": "uM", "volume_ul": 30, "plate_barcode": "ToolSRC"},
+    {"source_well": "A2", "compound_name": "vehicle", "stock_concentration": 100, "unit": "uM", "volume_ul": 30, "plate_barcode": "ToolSRC"}
+  ],
+  "additions": [
+    {
+      "picklist_name": "AssayBackfill",
+      "barcode_src": "ToolSRC",
+      "barcode_dst": ["CellPlate_001"],
+      "plate_map": {
+        "A1": "Drug",
+        "A2": "Drug",
+        "A3": "Drug"
+      },
+      "concentration_map": {
+        "A1": 1,
+        "A2": 2,
+        "A3": 10
+      },
+      "labels": [
+        {"label": "Drug", "compound": "Drug", "concentration": 0},
+        {"label": "Backfill", "compound": "vehicle", "concentration": 0.1}
+      ]
+    }
+  ]
+}

@@ -96,6 +96,41 @@ Do not use `Concentrations Map:`. Put multiple labels in a destination cell, e.g
 - Different `Picklist Name:`: create separate output CSVs, useful for time courses.
 - One source barcode per section. To use multiple source plates on the same destination plate, make separate sections with the same picklist name and same destination barcode(s).
 
+### Native operational backfill
+
+Backfill uses a reserved, unused Labels row in either an Assay section or the single Screen Labels table:
+
+| Labels | Compounds | Concentrations |
+|---|---|---|
+| `Backfill` | `vehicle` | mock final concentration |
+
+The reserved-word comparison is whitespace-trimmed and case-insensitive. If any case variant of `backfill` occurs as a token in the corresponding `Plate Map:`, the row is an ordinary treatment label instead of configuration. Without a CLI override, allow at most one unused Backfill row.
+
+The compound must exactly match an explicit `SRC` compound label. The mock final must be positive, finite, and in the same unit as the vehicle stock. The target total is:
+
+`target_nL = round_to_2.5_nL(1000 × well_volume_uL × mock_final / vehicle_stock)`
+
+PickliPy rounds every normal transfer independently, sums those rounded values at each final physical destination well, and adds only the positive remainder:
+
+- normal sum below target → add the difference as vehicle;
+- normal sum equal to or above target → add no automatic vehicle;
+- no positive normal compound transfer → do not backfill;
+- blank/missing dose, unresolved partial-Screen slot, or blacklisted coordinate → do not backfill;
+- randomized treatment → calculate and dispense the remainder at its randomized coordinate.
+
+Screen totals all source plates feeding a destination before adding one backfill event. It selects the first resolved source plate containing the explicit vehicle, then uses normal source-well switching among matching wells on that plate; place sufficient alternative vehicle wells there. Assay balances each addition section independently. A workbook row belongs to its section; a global CLI override applies to every nonempty section. Overlapping same-picklist sections can each top up the same well, so put native backfill only in the intended balancing section or keep sections spatially disjoint.
+
+Automatic vehicle is operational rather than a treatment annotation. It is included in Echo picklists, source depletion, and minimum-volume checks; Assay also records it in `picklist_after_dispense.xlsx`. Screen tracks depletion during generation but does not export an updated source workbook. Backfill is excluded from treatment signatures and condition metadata (`table merge`, condition lists, and compound/concentration maps).
+
+CLI/API overrides require an exact SRC compound and a target-total volume in nL. They ignore an unused workbook Backfill row and accept underscore or hyphen spelling:
+
+```bash
+python -m PickliPy.Assay -f assay.xlsx --backfill_name vehicle --backfill_volume 100 --no-pause
+python -m PickliPy.Screen -f screen.xlsx --backfill-name vehicle --backfill-volume 100 --no-pause
+```
+
+Supply both arguments or neither. Assay and Screen additionally permit both option names to appear without values, for example `--backfill_name --backfill_volume`; this bare pair is treated exactly like absent CLI options and therefore does not override workbook backfill configuration. The explicit volume is normalized once to the Echo 2.5 nL increment; it is not a fixed top-up amount.
+
 ## Screen workbook schema
 
 ### Sheet 1: `SRC`
@@ -130,8 +165,11 @@ The DST sheet may also contain one optional `Layout:` map. Identical layout labe
 Runtime randomization is disabled by default. Enable it with:
 
 ```bash
-python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause
+python -m PickliPy.Screen -f design.xlsx --randomize-wells true --no-pause
 ```
+
+Screen also accepts `design.xlsx` as a legacy positional argument when
+`-f/--file` is absent.
 
 The `-r` and `--randomize_wells` aliases accept the same explicit boolean value. Randomization is deterministic for a design-file basename and destination barcode, is calculated independently per destination plate after blacklist handling and LIB resolution, and permutes only actual used wells. Replicates are detected from the full resolved treatment signature including all identifiers/co-dispenses and final concentrations. Orthogonally adjacent replicates are forbidden when placement is feasible; an infeasible layout group causes a user-facing error. Echo targets, merge rows, and compound/concentration maps all receive the same permutation.
 
@@ -185,6 +223,9 @@ Blacklist rejection/relocation is applied before optional runtime randomization.
 - Does every label appearing in a `Plate Map:` have a row in the `Labels` table?
 - Does every Assay `Labels` compound exist in `SRC` for the active `Barcode_SRC:`?
 - Does every Screen wildcard/reference row resolve to valid `LIB` columns?
+- If an unused Backfill row is present, is there exactly one, does its compound resolve exactly in `SRC`, and are its mock final, stock, and derived target positive?
+- Is Assay backfill intentionally section-local, without overlapping same-picklist sections that top up the same well more than once?
+- Is there enough vehicle volume after preserving the minimum source volume?
 - Are `LIB` rows sorted by source plate barcode?
 - Are there enough destination barcodes in Screen `Barcode_DST:`?
 - Are stock/final concentration units consistent?

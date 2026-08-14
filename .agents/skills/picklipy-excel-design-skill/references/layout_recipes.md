@@ -20,6 +20,13 @@ Good placement:
 - Interleave replicate rows when edge effects are expected.
 - Put vehicle and positive controls at both left and right sides of the dose block.
 
+### Add equal-volume vehicle backfill
+
+- Add an unused row such as `Backfill | vehicle | 0.1` to this section's `Labels` table; keep `Backfill` out of the plate map.
+- Choose the mock final so the normal dilution formula yields the intended total transfer target. For example, a 50 µL destination, vehicle stock 100, and mock final 0.1 produce a 50 nL target.
+- Positive drug doses below 50 nL receive only the vehicle remainder. A 50 nL or larger drug transfer receives no automatic vehicle; blank or zero-dose wells receive none.
+- Native Assay backfill is section-local. When several same-picklist sections overlap, put Backfill only in the section intended to perform balancing.
+
 ## Assay: two-drug combinatorial matrix
 
 Goal: all combinations of A and B.
@@ -71,7 +78,7 @@ Recommended design:
 - Keep the `Plate Map:` as the deterministic auditable template.
 - Add a same-size `Layout:` map. Use one repeated label per allowed movement region, such as `left`, `right`, `cell_A`, or `cell_B`.
 - Use a unique layout label for a control well that must stay at its exact coordinate. Controls otherwise participate in randomization just like other resolved treatments.
-- Run `python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause`.
+- Run `python -m PickliPy.Screen -f design.xlsx --randomize-wells true --no-pause`.
 - Expect the same used-well set as the resolved, post-blacklist plate: empty slots on a partial final plate remain empty.
 - Audit `table merge.txt`, `plate map compounds.txt`, and `plate map concentrations.txt`; they contain the same randomized coordinates as the Echo picklist.
 
@@ -97,6 +104,13 @@ Randomization:
 - Replicate identity includes the resolved library identifier and final concentration. Same-dose repeats are spread as replicates; different doses are distinct treatments.
 - Multiple plate-map labels that resolve to the same full treatment still count as replicates.
 - Ensure each `Layout:` region has enough geometry to place repeats without shared-edge adjacency. Diagonal neighbors are allowed.
+
+### Add equal-volume vehicle backfill
+
+- Define the vehicle as an explicit Screen `SRC` compound, normally with source barcode `*` so it resolves alongside the library plates.
+- Add one unused `Backfill | vehicle | mock final` row after the slot rows. For helper `slot_layout` JSON, put it in `layout.extra_labels`.
+- Screen sums the independently rounded transfers for every dose/co-dispense across all source plates before adding one vehicle remainder.
+- Partial final-plate slots and rejected wells remain empty. When randomization is enabled, the top-up follows the randomized treatment coordinate.
 
 ## Screen: duplicate cell populations on one plate
 
@@ -143,3 +157,5 @@ Recommended design:
 - Do not assume a Screen control stays fixed during runtime randomization; pin it with a unique `Layout:` label.
 - Do not create a layout-label pool too small or narrow to separate its replicate counts; strict non-adjacent placement will fail rather than cross the boundary.
 - Do not leave too few destination barcodes for a shortlisted Screen library.
+- Do not put the reserved `Backfill` token in the plate map; that deliberately turns it into an ordinary treatment label and disables workbook-configured native backfill.
+- Do not combine native backfill with duplicate-label/manual vehicle co-dispenses unless both transfers are intentionally included in the target-volume sum.
