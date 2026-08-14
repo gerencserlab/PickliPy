@@ -833,6 +833,18 @@ def generate_screening_picklist(
                 if comp_label not in comp_to_libindex:
                     comp_to_libindex[comp_label] = libi
 
+        # Duplicate label rows support conditional co-dispenses such as DMSO
+        # backfill followed by the wildcard library compound for the same
+        # plate-map label.  On a partial final destination plate, the template
+        # can contain more library slots than remain in LIB.  Suppress an
+        # explicit co-dispense when that label's primary (final) compound
+        # mapping was not populated from LIB on this destination plate.
+        available_compounds = {
+            comp_label
+            for plate_map in srcr.values()
+            for comp_label in plate_map
+        }
+
         def resolve_conc_value(comp_label: str, conc_cell: Any) -> Any:
             s = as_str(conc_cell)
             if not s.startswith("@"):
@@ -861,6 +873,13 @@ def generate_screening_picklist(
             plate_map = srcr.get(plate, {})
             for lab, comp, conc in base_labels_resolved:
                 if comp not in plate_map:
+                    continue
+                primary_compound = labeldict.get(lab, comp)
+                if (
+                    comp in explicit_compounds
+                    and comp != primary_compound
+                    and primary_compound not in available_compounds
+                ):
                     continue
                 wells, stock, libi = plate_map[comp]
                 conc_num = as_number(conc)
