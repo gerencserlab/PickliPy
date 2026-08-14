@@ -62,6 +62,21 @@ Good placement:
 - Otherwise place sentinel controls every 6–8 columns or in both halves of the plate.
 - Fill slots in a deterministic order; row-major or serpentine is easiest to audit.
 
+## Screen: runtime-randomized library
+
+Goal: randomize actual Screen treatments independently on every destination plate while retaining physical experimental boundaries.
+
+Recommended design:
+
+- Keep the `Plate Map:` as the deterministic auditable template.
+- Add a same-size `Layout:` map. Use one repeated label per allowed movement region, such as `left`, `right`, `cell_A`, or `cell_B`.
+- Use a unique layout label for a control well that must stay at its exact coordinate. Controls otherwise participate in randomization just like other resolved treatments.
+- Run `python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause`.
+- Expect the same used-well set as the resolved, post-blacklist plate: empty slots on a partial final plate remain empty.
+- Audit `table merge.txt`, `plate map compounds.txt`, and `plate map concentrations.txt`; they contain the same randomized coordinates as the Echo picklist.
+
+The seed is deterministic from the design-file basename and destination barcode. Copying the same-named workbook elsewhere reproduces the placement; renaming it changes the seed.
+
 ## Screen: library dose response
 
 Goal: each library compound at multiple concentrations.
@@ -75,7 +90,13 @@ Recommended design:
 Blacklisting:
 
 - Group all labels for one library row together by mapping them to the same compound item label.
-- Use group maps when multiple cell populations or plate regions must be kept separate.
+- Use DST `Layout:` labels when multiple cell populations or plate regions must remain separate during runtime randomization; the current blacklist-compaction path does not enforce distinct `Groups:` text as regional boundaries.
+
+Randomization:
+
+- Replicate identity includes the resolved library identifier and final concentration. Same-dose repeats are spread as replicates; different doses are distinct treatments.
+- Multiple plate-map labels that resolve to the same full treatment still count as replicates.
+- Ensure each `Layout:` region has enough geometry to place repeats without shared-edge adjacency. Diagonal neighbors are allowed.
 
 ## Screen: duplicate cell populations on one plate
 
@@ -85,7 +106,8 @@ Recommended design:
 
 - Split the plate into left/right halves or quadrants.
 - Place each slot once in each group, e.g. `#1` in left and `#1` again in right, or use paired labels that map to the same compound item.
-- In `DST_Blacklist`, label movable wells in the left region with group `left` and right region with group `right`.
+- Use `left` and `right` labels in the DST `Layout:` map to keep runtime randomization regional.
+- The current shift-based blacklist path does not enforce different `Groups:` text as separate regions. Validate blacklist-compacted outputs carefully or process the cell populations separately when blacklist relocation must remain regional.
 - Leave controls ungrouped unless the user intentionally wants them movable.
 
 ## Screen: QC blacklist expected
@@ -97,8 +119,8 @@ Recommended design:
 - Include a `DST_Blacklist` sheet.
 - Add a `Groups:` map for all movable library wells.
 - Keep controls blank in the group map.
-- Use the final Screen `Labels` row as a safe fill control, e.g. `fill -> vehicle`.
-- Generate a two-column blacklist CSV from Harmony or another analysis and paste it under `Barcode_DST`/`Well`.
+- Generate a blacklist CSV from Harmony or another analysis and paste it under the required `Well Blacklist:` marker and `Barcode_DST`/`Well` headers.
+- Validate replicate/dose counts after blacklist compaction; the current Python shift path does not use a fill row and can truncate a repeated group at a capacity boundary.
 
 ## 96-well assay-ready plates
 
@@ -117,4 +139,7 @@ Recommended design:
 - Do not rely on cell color or formatting for logic.
 - Do not put multiple labels in a dose-response `Plate Map:` section that has `Concentrations Map:`; split into multiple sections instead.
 - Do not group blacklisted control wells unless controls can be moved safely.
+- Do not use `DST_Blacklist!Groups:` as a substitute for `DST!Layout:`; they control different stages.
+- Do not assume a Screen control stays fixed during runtime randomization; pin it with a unique `Layout:` label.
+- Do not create a layout-label pool too small or narrow to separate its replicate counts; strict non-adjacent placement will fail rather than cross the boundary.
 - Do not leave too few destination barcodes for a shortlisted Screen library.

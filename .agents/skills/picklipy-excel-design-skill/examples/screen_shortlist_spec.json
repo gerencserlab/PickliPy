@@ -14,8 +14,8 @@
     "Category": "mitochondria"
   },
   "controls": [
-    {"source_well": "A1", "compound_name": "veh", "stock_concentration": 10000, "identifier": "DMSO", "volume_ul": 10, "plate_barcode": "*"},
-    {"source_well": "A2", "compound_name": "pos", "stock_concentration": 10000, "identifier": "PositiveControl", "volume_ul": 10, "plate_barcode": "*"}
+    {"source_well": "P23", "compound_name": "veh", "stock_concentration": 10000, "identifier": "DMSO", "volume_ul": 10, "plate_barcode": "*"},
+    {"source_well": "P24", "compound_name": "pos", "stock_concentration": 10000, "identifier": "PositiveControl", "volume_ul": 10, "plate_barcode": "*"}
   ],
   "src_reference_row": {
     "source_well": "@A",
@@ -32,13 +32,17 @@
     "concentrations": [10],
     "reserve_edges": true,
     "control_label": "veh",
+    "control_concentration": 10,
     "positive_label": "pos",
-    "fill_label": "fill",
+    "positive_concentration": 1,
+    "fill_label": null,
     "order": "row-major",
-    "group_mode": "all"
+    "group_mode": "all",
+    "randomization_layout_mode": "halves",
+    "pin_controls_for_randomization": true
   },
   "blacklist": {
-    "ScreenPlate_001": ["B2", "C3"],
+    "ScreenPlate_001": ["C3"],
     "ScreenPlate_002": []
   },
   "include_blacklist": true,

@@ -33,3 +33,13 @@ python scripts/picklipy_design_builder.py screen-demo --output /tmp/screen_demo.
 python scripts/picklipy_design_builder.py validate /tmp/assay_demo.xlsx --mode assay
 python scripts/picklipy_design_builder.py validate /tmp/screen_demo.xlsx --mode screen
 ```
+
+## Run a randomized Screen
+
+Screen workbooks may contain an optional DST `Layout:` map. Identical layout labels are runtime-randomization boundaries and are separate from `DST_Blacklist!Groups:`.
+
+```bash
+python -m PickliPy.Screen /tmp/screen_demo.xlsx --randomize-wells true --no-pause
+```
+
+The builder's `slot_layout` JSON accepts `randomization_layout_mode` values `none`, `all`, `halves`, or `quadrants` and pins generated controls by default; custom layouts accept a `randomization_layout` well map or 16 × 24 grid. The presets split the full 16 × 24 canvas, so use a custom map for 96-well half/quadrant boundaries.

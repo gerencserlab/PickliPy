@@ -38,6 +38,7 @@ from .common import (
     write_text,
     well_name
 )
+from .randomization import optimize_plate_well_map, seed_from_text
 
 
 @dataclass
@@ -337,9 +338,39 @@ def _round_dispense_nl(desired_nl: float) -> float:
     return round_to_increment(desired_nl, 2.5)
 
 
+def _build_treatment_signatures_for_randomization(
+    *,
+    plate_pairs: Sequence[Tuple[str, str]],
+    signature_parts_by_label: Mapping[str, Sequence[str]],
+) -> Dict[str, str]:
+    """Build per-well treatment signatures for Screen randomization.
+
+    ``plate_pairs`` contains the template position and its plate-map label cell.
+    A label can resolve to multiple dispense definitions (for example a vehicle
+    backfill plus a library compound), so every resolved identifier and final
+    concentration is included in the signature. Labels without a resolved
+    source definition are omitted; this keeps unused positions unused on a
+    partially filled final destination plate.
+    """
+
+    treatment_by_well: Dict[str, str] = {}
+    for dstwell, label_cell in plate_pairs:
+        parts: List[str] = []
+        for label in split_labels(label_cell):
+            parts.extend(signature_parts_by_label.get(label, ()))
+        if not parts:
+            continue
+        signature = repr(tuple(sorted(parts)))
+        previous = treatment_by_well.get(dstwell, "")
+        treatment_by_well[dstwell] = previous + (";" if previous else "") + signature
+    return treatment_by_well
+
+
 def generate_screening_picklist(
-    xlsx_path: str | Path
-    ) -> None:
+    xlsx_path: str | Path,
+    *,
+    randomize_wells: bool = False,
+) -> None:
     """Generate screening picklists and metadata files.
 
     This function mirrors `screeningpicklist.wls` behavior.
@@ -380,6 +411,31 @@ def generate_screening_picklist(
     plate_grid = _extract_plate_grid(
         dst, plate_map_row + 1, left_col=1, n_rows=plate_rows, n_cols=plate_cols)
     b0 = _plate_map_pairs_from_grid(plate_grid)
+
+    # Optional Layout map. Its labels define independent randomization pools:
+    # a treatment can move only to another used well carrying the same Layout
+    # label. In the absence of Layout:, all used wells form one pool.
+    layout_by_well: Dict[str, str] = {}
+    layout_row = _find_row(dst, "Layout:")
+    if layout_row is not None:
+        layout_grid = _extract_plate_grid(
+            dst,
+            layout_row + 1,
+            left_col=1,
+            n_rows=plate_rows,
+            n_cols=plate_cols,
+        )
+        for row_index in range(plate_rows):
+            for col_index in range(plate_cols):
+                layout_by_well[well_name(row_index + 1, col_index + 1)] = (
+                    layout_grid[row_index][col_index].strip()
+                )
+
+    if randomize_wells:
+        print(
+            "****** Well randomization enabled (per destination plate barcode) - "
+            "this may take a minute - random seed is based on design file name ******"
+        )
 
     # Labels table starts at labels_row+1 and runs until blank in col A.
     labellists00: List[List[List[Any]]] = [[]]
@@ -890,15 +946,69 @@ def generate_screening_picklist(
                 defs.append((lab, (wells, float(stock), int(libi)), float(conc_num)))
             labellists_by_src.append(defs)
 
+        # Build one destination-specific permutation after all actual LIB-backed
+        # definitions are known. This makes aliases with the same resolved
+        # identifier/concentration count as replicates and excludes empty slots
+        # on a partially filled final plate.
+        c_pairs_use = c_pairs
+        if randomize_wells:
+            signature_parts_by_label: Dict[str, List[str]] = {}
+            for plate_i, plate in enumerate(barcodes_src_ordered):
+                for lab, (wells, _stock, _libi), final in labellists_by_src[plate_i]:
+                    ident = src_name.get(plate, {}).get(wells[0], wells[0])
+                    signature_ident = ident or f"{plate}:{wells[0]}"
+                    final_text = as_str(integer_chop(float(final)))
+                    signature_parts_by_label.setdefault(lab, []).append(
+                        f"{signature_ident}_{final_text}"
+                    )
+
+            treatment_by_well = _build_treatment_signatures_for_randomization(
+                plate_pairs=b_pairs,
+                signature_parts_by_label=signature_parts_by_label,
+            )
+            seed = seed_from_text(f"{xlsx_path.name}|{barcode_dst}")
+            try:
+                well_map = optimize_plate_well_map(
+                    treatment_by_well=treatment_by_well,
+                    layout_by_well=layout_by_well if layout_by_well else None,
+                    seed=seed,
+                    attempts=100,
+                    forbid_adjacent_replicates=True,
+                )
+            except ValueError as e:
+                raise PicklyPyConfigError(
+                    f"Well randomization failed for destination plate {barcode_dst}: {e}"
+                ) from e
+
+            c_pairs_use = [
+                (well_map.get(dstwell, dstwell), lab)
+                for dstwell, lab in c_pairs
+            ]
+            print(
+                f"Randomization map for {barcode_dst}: {len(well_map)} wells mapped "
+                f"({len(treatment_by_well)} used wells)."
+            )
+
+        if barcode_dst not in conditionlabels:
+            conditionlabels[barcode_dst] = [
+                ["" for _ in range(plate_cols)] for _ in range(plate_rows)
+            ]
+
+        # Rejected coordinates are physical metadata and are recorded once per
+        # destination plate, independently of how many source plates feed it.
+        for bad, _bcd, _rej, _zero in clname_blk_entries:
+            row_index, col_index = parse_well_name(bad)
+            conditionlabels[barcode_dst][row_index - 1][col_index - 1] = (
+                "rejected",
+                0,
+            )
+        table_merge_rows_blk.extend(clname_blk_entries)
+
         # Now generate dispenses per source plate
         for plate_i, plate in enumerate(barcodes_src_ordered):
             print(f"****** {header.picklist_name}.csv ******")
             loopsrc.append(plate)
             loopdst.append(barcode_dst)
-
-            if barcode_dst not in conditionlabels:
-                conditionlabels[barcode_dst] = [
-                    ["" for _ in range(plate_cols)] for _ in range(plate_rows)]
 
             print(f"Dispensing from: {plate}")
             print(f"Dispensing into: {barcode_dst}")
@@ -911,7 +1021,7 @@ def generate_screening_picklist(
             cl_events: List[Tuple[str, List[str], float]] = []
             clname_events: List[Tuple[str, str, float]] = []
 
-            for dstwell, lab in c_pairs:
+            for dstwell, lab in c_pairs_use:
                 if lab not in label_defs:
                     continue
                 for (wells, stock, _libi), final in label_defs[lab]:
@@ -951,15 +1061,6 @@ def generate_screening_picklist(
                     else:
                         new_conc = [existing_conc, final]
                     conditionlabels[barcode_dst][r0][c0] = (f"{existing_ident}+{ident}", new_conc)
-
-            # Apply blacklist rejected markers in conditionlabels
-            for bad, _bcd, _rej, _zero in clname_blk_entries:
-                r, c = parse_well_name(bad)
-                conditionlabels[barcode_dst][r - 1][c - 1] = ("rejected", 0)
-
-            # Add blacklist rows to merge table output
-            for row in clname_blk_entries:
-                table_merge_rows_blk.append(row)
 
             # Optimize and choose source wells
             # Group by src wells list (compound), maintain order of first appearance
@@ -1117,10 +1218,37 @@ def generate_screening_picklist(
 def main(argv: Optional[Sequence[str]] = None) -> int:
     import argparse
 
+    def _str2bool(v: object) -> bool:
+        if isinstance(v, bool):
+            return v
+        value = str(v).strip().lower()
+        if value in {"true", "t", "1", "yes", "y"}:
+            return True
+        if value in {"false", "f", "0", "no", "n"}:
+            return False
+        raise argparse.ArgumentTypeError(
+            "Expected a boolean value for --randomize-wells (true/false)."
+        )
+
     parser = argparse.ArgumentParser(
         description="PicklyPy.Screen - generate screening picklists from SRC/DST/LIB worksheets"
     )
     parser.add_argument("xlsx", help="Path to the design Excel file")
+
+    parser.add_argument(
+        "-r",
+        "--randomize_wells",
+        "--randomize-wells",
+        dest="randomize_wells",
+        type=_str2bool,
+        default=False,
+        metavar="{true|false}",
+        help=(
+            "Randomize destination well positions independently for each destination plate barcode. "
+            "Only genuinely used wells are permuted. If a Layout: map is present in the DST worksheet, "
+            "wells move only among positions with the same Layout label."
+        ),
+    )
 
     parser.add_argument(
         "--no-pause",
@@ -1133,7 +1261,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     from .common import run_with_user_facing_errors
 
     return run_with_user_facing_errors(
-        lambda: generate_screening_picklist(args.xlsx),
+        lambda: generate_screening_picklist(
+            args.xlsx,
+            randomize_wells=args.randomize_wells,
+        ),
         pause_on_exit=not args.no_pause,
     )
 

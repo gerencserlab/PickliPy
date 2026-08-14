@@ -90,13 +90,64 @@ Cause:
 
 - The `Groups:` map does not label all intended movable library wells.
 - Controls were included in groups.
-- The final `Labels` row is not a suitable fill control.
+- A repeated replicate/dose group was cut by the surviving well capacity.
 
 Fix:
 
 - Rebuild the group map with only library wells in groups.
-- Use separate group labels for separate cell populations/regions.
-- Make the last `Labels` row a benign fill treatment.
+- Validate output replicate/dose cardinality after compaction.
+- Do not rely on distinct `Groups:` text values for regional isolation in the current shift-based Python path; inspect the compacted output or separate the designs.
+
+## Screen wells are not randomized
+
+Cause:
+
+- Runtime randomization defaults to off.
+- The CLI boolean was omitted or false.
+- A layout-label pool has only one genuinely used well, so its mapping is necessarily unchanged.
+
+Fix:
+
+- Run `python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause` (or use `-r true` / `--randomize_wells true`).
+- Remember that only actual post-blacklist, LIB-resolved dispenses are candidates; empty final-plate slots do not become used.
+- The seed is deterministic from the workbook basename and destination barcode, so rerunning the same design intentionally reproduces the same placement.
+
+## “Well randomization failed” or replicates cannot be separated
+
+Cause:
+
+- A `Layout:` label pool is too small or too narrow for the replicate count.
+- Too many identical resolved treatment signatures must fit without orthogonal adjacency.
+
+Fix:
+
+- Add more used positions carrying the same layout label, reduce the replicate count, or redesign the region geometry.
+- Do not merge layout groups merely to suppress the error unless movement across that biological boundary is valid.
+
+## Randomized wells cross an expected boundary
+
+Cause:
+
+- The boundary exists only in `DST_Blacklist!Groups:` and not in the DST `Layout:` map.
+- Layout text differs by whitespace/case or is blank where a distinct region was intended.
+- Identical layout labels were reused in disconnected regions; identical text always forms one pool.
+
+Fix:
+
+- Add or correct `DST!Layout:` labels for every intended randomization region.
+- Treat `Layout:` and blacklist `Groups:` as separate maps and validate both when both features are active.
+
+## Randomized metadata disagrees with the expected design positions
+
+Cause:
+
+- The original Excel `Plate Map:` is the pre-randomization template and is not rewritten.
+- A downstream analysis used template coordinates instead of generated runtime metadata.
+
+Fix:
+
+- Use the destination wells in the generated Echo picklist, `table merge.txt`, `plate map compounds.txt`, and `plate map concentrations.txt`; these artifacts all carry the randomized coordinates.
+- Keep blacklist `rejected` positions and the `Layout:` grid at their original physical coordinates; they are intentionally not remapped.
 
 ## Excel turns `@A` references into something unexpected
 

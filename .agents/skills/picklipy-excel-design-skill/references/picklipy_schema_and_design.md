@@ -23,7 +23,10 @@ This reference summarizes how to design Excel workbooks for PickliPy picklist ge
 - Rows: `A` through `P`; columns: `1` through `24`.
 - Map data begins one cell below and one cell to the right of the map label.
 - A `Plate Map:` label in cell `A14` means processed destination `A1` is in `B15`, destination `A2` is in `C15`, destination `B1` is in `B16`, etc.
+- An optional `Layout:` uses the same geometry. It is a fixed physical map: runtime randomization may exchange only genuinely used wells with identical layout-label text. Blank layout cells form one shared group.
 - For 96-well mode, use only the top-left 8 rows × 12 columns of the 384 grid.
+
+Do not confuse `DST!Layout:` with `DST_Blacklist!Groups:`. The former constrains randomization; non-empty cells in the latter identify blacklist-compaction positions. They remain separate inputs, and the current shift-based Python path does not enforce different `Groups:` text values as regional pools.
 
 ## Bluetable workbook schema
 
@@ -122,6 +125,16 @@ Screen uses a single `Plate Map:`. Place fixed controls and library slot labels.
 - `Barcode_DST:`: comma-separated list of available destination plate barcodes.
 - `Labels`: map plate-map labels to compound item labels and final concentrations.
 
+The DST sheet may also contain one optional `Layout:` map. Identical layout labels define randomization pools; different labels are hard boundaries. A layout label used by only one occupied well pins that well. Identical labels may be spatially disconnected and still form one pool.
+
+Runtime randomization is disabled by default. Enable it with:
+
+```bash
+python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause
+```
+
+The `-r` and `--randomize_wells` aliases accept the same explicit boolean value. Randomization is deterministic for a design-file basename and destination barcode, is calculated independently per destination plate after blacklist handling and LIB resolution, and permutes only actual used wells. Replicates are detected from the full resolved treatment signature including all identifiers/co-dispenses and final concentrations. Orthogonally adjacent replicates are forbidden when placement is feasible; an infeasible layout group causes a user-facing error. Echo targets, merge rows, and compound/concentration maps all receive the same permutation.
+
 Library slots typically look like:
 
 | Labels | Compounds | Concentrations |
@@ -153,17 +166,19 @@ The blacklist sheet contains a group map and a destination-barcode/well list.
 `Groups:` map:
 
 - Empty cells: fixed positions. Blacklisted wells in these positions are rejected but not relocated.
-- Non-empty cells: group labels. Wells relocate only within the same group.
+- Non-empty cells: movable/available positions. The current shift-based Python path flattens these positions and does not enforce distinct group-label values as separate relocation pools.
 - Do not put group labels on controls unless controls are intended to move.
 
-`Barcode_DST` list:
+`Well Blacklist:` table (the marker is required by the production parser):
 
-| Barcode_DST | Well |
-|---|---|
-| Plate1 | A2,B5,C10 |
-| Plate2 | D7,E8 |
+| Well Blacklist: | Barcode_DST | Well |
+|---|---|---|
+|  | Plate1 | A2,B5,C10 |
+|  | Plate2 | D7,E8 |
 
-If a compound has several associated wells, all are moved together to a later plate when one member is blacklisted. The final row in the Screen `Labels` table is used as the fill treatment for freed good positions.
+The current Python shift path does not use a final fill-label row. When a library item has several associated replicate/dose wells, validate output cardinality after blacklisting because a repeated group can be truncated when surviving capacity cuts through it.
+
+Blacklist rejection/relocation is applied before optional runtime randomization. Rejected coordinates remain physical `rejected` positions in the merge and plate-map outputs, and are excluded from randomization targets.
 
 ## Operational checks before running PickliPy
 
@@ -176,4 +191,7 @@ If a compound has several associated wells, all are moved together to a later pl
 - Does the estimated transfer volume round to a valid Echo increment?
 - Are source wells above minimum volume after all expected transfers?
 - Are blacklisted controls intentionally fixed or intentionally movable?
+- If runtime randomization is enabled, do all intended exchanges remain within identical `Layout:` labels, and are uniquely labeled controls intentionally pinned?
+- Are repeated treatments feasible without orthogonal adjacency inside each layout-label pool?
+- When blacklist compaction and randomization are both active, was the compacted output audited separately from the `Layout:`-constrained randomization?
 - Are output file names unique enough to avoid overwriting prior PlateWorks files?

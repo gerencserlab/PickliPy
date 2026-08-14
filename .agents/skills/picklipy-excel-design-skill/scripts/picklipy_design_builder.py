@@ -512,6 +512,7 @@ class ScreenLayout:
     plate_map: List[List[str]]
     labels: List[Dict[str, Any]]
     groups: Optional[List[List[str]]] = None
+    randomization_layout: Optional[List[List[str]]] = None
 
 
 def candidate_wells_for_layout(
@@ -533,6 +534,36 @@ def candidate_wells_for_layout(
     return wells
 
 
+def make_randomization_layout(*, mode: str = "all") -> Optional[List[List[str]]]:
+    """Create a Screen ``Layout:`` grid for runtime randomization boundaries.
+
+    This is deliberately separate from ``DST_Blacklist!Groups:``, which controls
+    blacklist relocation rather than randomization.
+    """
+
+    mode = as_str(mode).strip().lower()
+    if mode in {"", "none"}:
+        return None
+    if mode not in {"all", "halves", "quadrants"}:
+        raise ValueError(
+            "randomization_layout_mode must be one of: none, all, halves, quadrants"
+        )
+
+    layout = blank_grid()
+    for r in range(1, ROWS_384 + 1):
+        for c in range(1, COLS_384 + 1):
+            if mode == "halves":
+                label = "left" if c <= COLS_384 // 2 else "right"
+            elif mode == "quadrants":
+                top = "top" if r <= ROWS_384 // 2 else "bottom"
+                side = "left" if c <= COLS_384 // 2 else "right"
+                label = f"{top}_{side}"
+            else:
+                label = "all"
+            layout[r - 1][c - 1] = label
+    return layout
+
+
 def make_screen_slot_layout(
     *,
     slots: int = 77,
@@ -540,10 +571,14 @@ def make_screen_slot_layout(
     concentrations: Optional[Sequence[Any]] = None,
     reserve_edges: bool = True,
     control_label: Optional[str] = "veh",
+    control_concentration: Any = 10,
     positive_label: Optional[str] = "pos",
-    fill_label: str = "fill",
+    positive_concentration: Any = 1,
+    fill_label: Optional[str] = None,
     order: str = "row-major",
     group_mode: str = "all",
+    randomization_layout_mode: str = "none",
+    pin_controls_for_randomization: bool = True,
 ) -> ScreenLayout:
     if slots < 1:
         raise ValueError("slots must be >= 1")
@@ -559,13 +594,25 @@ def make_screen_slot_layout(
             for c in range(1, COLS_384 + 1):
                 if r in (1, ROWS_384) or c in (1, COLS_384):
                     plate_map[r - 1][c - 1] = control_label
-        labels.append({"label": control_label, "compound": control_label, "concentration": 0})
+        labels.append(
+            {
+                "label": control_label,
+                "compound": control_label,
+                "concentration": control_concentration,
+            }
+        )
         if positive_label:
             # Place positives in four corners, overriding vehicle edge controls.
             for w in ["A1", "A24", "P1", "P24"]:
                 r, c = parse_well(w)
                 plate_map[r - 1][c - 1] = positive_label
-            labels.append({"label": positive_label, "compound": positive_label, "concentration": 1})
+            labels.append(
+                {
+                    "label": positive_label,
+                    "compound": positive_label,
+                    "concentration": positive_concentration,
+                }
+            )
 
     wells = candidate_wells_for_layout(reserve_edges=reserve_edges, order=order)
     required = slots * replicates * len(concs)
@@ -589,7 +636,19 @@ def make_screen_slot_layout(
         labels.append({"label": fill_label, "compound": control_label or fill_label, "concentration": 0})
 
     groups = make_group_grid(plate_map, mode=group_mode, controls={control_label, positive_label, fill_label, "", None})
-    return ScreenLayout(plate_map=plate_map, labels=labels, groups=groups)
+    randomization_layout = make_randomization_layout(mode=randomization_layout_mode)
+    if randomization_layout is not None and pin_controls_for_randomization:
+        fixed_labels = {as_str(x) for x in (control_label, positive_label) if x is not None}
+        for r in range(1, ROWS_384 + 1):
+            for c in range(1, COLS_384 + 1):
+                if as_str(plate_map[r - 1][c - 1]) in fixed_labels:
+                    randomization_layout[r - 1][c - 1] = f"fixed_{well_name(r, c)}"
+    return ScreenLayout(
+        plate_map=plate_map,
+        labels=labels,
+        groups=groups,
+        randomization_layout=randomization_layout,
+    )
 
 
 def make_group_grid(
@@ -723,15 +782,32 @@ def make_screen_workbook(
     elif isinstance(layout, ScreenLayout):
         layout_obj = layout
     else:
+        randomization_layout_value = layout.get(
+            "randomization_layout",
+            layout.get("layout_map"),
+        )
         layout_obj = ScreenLayout(
             plate_map=normalize_grid(layout.get("plate_map")),
             labels=list(layout.get("labels", [])),
             groups=normalize_grid(layout.get("groups")) if layout.get("groups") is not None else None,
+            randomization_layout=(
+                normalize_grid(randomization_layout_value)
+                if randomization_layout_value is not None
+                else None
+            ),
         )
 
     current_row = 14
     write_plate_grid(ws_dst, current_row, "Plate Map:", layout_obj.plate_map)
     current_row += ROWS_384 + 2
+    if layout_obj.randomization_layout is not None:
+        write_plate_grid(
+            ws_dst,
+            current_row,
+            "Layout:",
+            layout_obj.randomization_layout,
+        )
+        current_row += ROWS_384 + 2
     current_row = write_kv(
         ws_dst,
         current_row,
@@ -759,16 +835,16 @@ def make_screen_workbook(
         groups = layout_obj.groups or make_group_grid(layout_obj.plate_map)
         write_plate_grid(ws_blk, 1, "Groups:", groups)
         start = ROWS_384 + 4
-        ws_blk.cell(start, 1).value = "Barcode_DST"
-        ws_blk.cell(start, 2).value = "Well"
-        ws_blk.cell(start, 1).font = Font(bold=True)
-        ws_blk.cell(start, 2).font = Font(bold=True)
-        ws_blk.cell(start, 1).fill = SECTION_FILL
-        ws_blk.cell(start, 2).fill = SECTION_FILL
+        ws_blk.cell(start, 1).value = "Well Blacklist:"
+        ws_blk.cell(start, 2).value = "Barcode_DST"
+        ws_blk.cell(start, 3).value = "Well"
+        for column in range(1, 4):
+            ws_blk.cell(start, column).font = Font(bold=True)
+            ws_blk.cell(start, column).fill = SECTION_FILL
         for i, barcode in enumerate(dst_barcodes, start + 1):
-            ws_blk.cell(i, 1).value = barcode
+            ws_blk.cell(i, 2).value = barcode
             wells = blacklist.get(barcode, []) if blacklist else []
-            ws_blk.cell(i, 2).value = ",".join(wells)
+            ws_blk.cell(i, 3).value = ",".join(wells)
         set_common_sheet_style(ws_blk)
 
     for ws in wb.worksheets:
@@ -913,6 +989,17 @@ def validate_screen(path: str | Path) -> List[str]:
     labels_rows = find_rows_with_label(ws_dst, "Labels")
     if len(labels_rows) != 1:
         raise ValidationError(f"Screen workbook should have exactly one Labels table, found {len(labels_rows)}")
+    layout_rows = find_rows_with_label(ws_dst, "Layout:")
+    if len(layout_rows) > 1:
+        raise ValidationError(
+            f"Screen workbook should have at most one Layout:, found {len(layout_rows)}"
+        )
+    if layout_rows:
+        randomization_layout = read_grid(ws_dst, layout_rows[0])
+        if not any(cell != "" for row in randomization_layout for cell in row):
+            warnings.append(
+                "Screen Layout: map is blank; all used wells will still form one randomization group"
+            )
 
     grid = read_grid(ws_dst, plate_map_rows[0])
     used = set(labels_in_grid(grid))
@@ -961,6 +1048,47 @@ def validate_screen(path: str | Path) -> List[str]:
                 last = barcode
     else:
         warnings.append("Could not identify LIB source plate barcode column for sorting check")
+
+    # Optional blacklist sheet must use the marker/header shape consumed by
+    # PickliPy.Screen, not merely a visually similar two-column table.
+    ws_blacklist = None
+    for sheet in wb.worksheets[3:]:
+        lowered = sheet.title.lower()
+        if "blacklist" in lowered or "blk" in lowered:
+            ws_blacklist = sheet
+            break
+    if ws_blacklist is None and len(wb.worksheets) > 3:
+        ws_blacklist = wb.worksheets[3]
+    if ws_blacklist is not None:
+        groups_rows = find_rows_with_label(ws_blacklist, "Groups:")
+        if len(groups_rows) != 1:
+            raise ValidationError(
+                f"Screen blacklist should have exactly one Groups:, found {len(groups_rows)}"
+            )
+
+        marker_row = None
+        for row in range(1, ws_blacklist.max_row + 1):
+            for column in range(1, ws_blacklist.max_column + 1):
+                value = as_str(ws_blacklist.cell(row, column).value)
+                cleaned = value.strip().lower().replace("_", " ").rstrip(":")
+                if cleaned == "well blacklist":
+                    marker_row = row
+                    break
+            if marker_row is not None:
+                break
+        if marker_row is None:
+            raise ValidationError(
+                "Screen blacklist is missing the required Well Blacklist: marker row"
+            )
+
+        marker_headers = [
+            as_str(ws_blacklist.cell(marker_row, column).value).strip().lower()
+            for column in range(1, ws_blacklist.max_column + 1)
+        ]
+        if not any("barcode" in value for value in marker_headers):
+            raise ValidationError("Well Blacklist: row is missing a Barcode_DST header")
+        if not any(value.rstrip(":") == "well" for value in marker_headers):
+            raise ValidationError("Well Blacklist: row is missing a Well header")
 
     # Check SRC @ references refer to existing LIB columns.
     max_col = ws_lib.max_column
@@ -1127,7 +1255,13 @@ def assay_demo(output: str | Path) -> Path:
 
 
 def screen_demo(output: str | Path, *, slots: int, dst_barcodes: Sequence[str]) -> Path:
-    layout = make_screen_slot_layout(slots=slots, replicates=1, concentrations=[10], reserve_edges=True)
+    layout = make_screen_slot_layout(
+        slots=slots,
+        replicates=1,
+        concentrations=[10],
+        reserve_edges=True,
+        randomization_layout_mode="all",
+    )
     library_rows: List[Dict[str, Any]] = []
     for i in range(1, slots + 1):
         plate = "LibPlate1" if i <= max(1, slots // 2) else "LibPlate2"
@@ -1141,8 +1275,8 @@ def screen_demo(output: str | Path, *, slots: int, dst_barcodes: Sequence[str]) 
             }
         )
     controls = [
-        ScreenControl("A1", "veh", 10000, "DMSO", 10, "*"),
-        ScreenControl("A2", "pos", 10000, "PositiveControl", 10, "*"),
+        ScreenControl("P23", "veh", 10000, "DMSO", 10, "*"),
+        ScreenControl("P24", "pos", 10000, "PositiveControl", 10, "*"),
     ]
     return make_screen_workbook(
         output=output,
@@ -1182,16 +1316,35 @@ def cmd_screen_from_spec(args: argparse.Namespace) -> None:
             concentrations=layout_spec.get("concentrations", [10]),
             reserve_edges=layout_spec.get("reserve_edges", True),
             control_label=layout_spec.get("control_label", "veh"),
+            control_concentration=layout_spec.get("control_concentration", 10),
             positive_label=layout_spec.get("positive_label", "pos"),
-            fill_label=layout_spec.get("fill_label", "fill"),
+            positive_concentration=layout_spec.get("positive_concentration", 1),
+            fill_label=layout_spec.get("fill_label"),
             order=layout_spec.get("order", "row-major"),
             group_mode=layout_spec.get("group_mode", "all"),
+            randomization_layout_mode=layout_spec.get(
+                "randomization_layout_mode",
+                "none",
+            ),
+            pin_controls_for_randomization=layout_spec.get(
+                "pin_controls_for_randomization",
+                True,
+            ),
         )
     elif layout_spec:
+        randomization_layout_value = layout_spec.get(
+            "randomization_layout",
+            layout_spec.get("layout_map"),
+        )
         layout = ScreenLayout(
             plate_map=normalize_grid(layout_spec.get("plate_map")),
             labels=layout_spec.get("labels", []),
             groups=normalize_grid(layout_spec.get("groups")) if layout_spec.get("groups") is not None else None,
+            randomization_layout=(
+                normalize_grid(randomization_layout_value)
+                if randomization_layout_value is not None
+                else None
+            ),
         )
     else:
         layout = make_screen_slot_layout()

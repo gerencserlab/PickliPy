@@ -43,11 +43,14 @@ PickliPy Assay and Screen workbooks use a 384-well grid unless the user explicit
 
 - `Plate Map:` in column A; map cells are immediately below and to the right, i.e. columns B:Y and 16 rows.
 - `Concentrations Map:` in column A; same 16 × 24 geometry.
+- Optional `Layout:` in column A; same geometry. Its cell text defines fixed physical regions for runtime well randomization: a treatment may move only between used wells whose `Layout:` cells contain identical text. Blank cells are one shared label group, as in `PickliPy.Assay`.
 - `Groups:` in `DST_Blacklist`; same 16 × 24 geometry.
+
+`DST!Layout:` and `DST_Blacklist!Groups:` are independent. `Layout:` constrains randomization; non-empty `Groups:` cells identify positions available to the current blacklist-compaction path. Do not substitute one for the other.
 
 For a 96-well design, fill only the top-left 8 × 12 portion of the same 384-format map (`A1:H12`). Leave the remainder blank unless the user explicitly wants visible notes outside the processed region.
 
-Labels are parsed from plate-map cells. Separators are comma, semicolon, plus, and newline. Therefore labels themselves must not contain those separators. Prefer short labels such as `FCCP`, `OLIGO`, `DMSO`, `#1`, `#1_d2`, `CTRLpos`, `veh`, or `fill`. Avoid spaces. Keep display colors/styles for human readability only; the generator reads text values.
+Labels are parsed from plate-map cells. Separators are comma, semicolon, plus, and newline. Therefore labels themselves must not contain those separators. Prefer short labels such as `FCCP`, `OLIGO`, `DMSO`, `#1`, `#1_d2`, `CTRLpos`, or `veh`. Avoid spaces. Keep display colors/styles for human readability only; the generator reads text values.
 
 ## Dispense-volume reasoning
 
@@ -190,9 +193,29 @@ Top header rows include the Assay header fields plus:
 
 Only one `Plate Map:` is used. It defines fixed controls plus numbered or otherwise unique library slots. `Barcode_DST:` is a comma-separated list of available destination plate barcodes; the generator uses only as many as needed to dispense the library.
 
+An optional `Layout:` map may follow the plate map. Use it only to define randomization boundaries. Identically labeled positions form one pool even when they are spatially disconnected; differently labeled positions never exchange treatments. A unique layout label on a single used well pins that treatment to its original position. The physical layout map itself does not move.
+
 The `Labels` list maps each plate-map label to an inventory item label and final concentration. A typical library slot uses the same text in `Labels` and `Compounds`, e.g. `#1` → `#1`. Multiple plate-map labels may map to the same compound item label to create dose levels for the same library row, e.g. `#1_d1`, `#1_d2`, `#1_d3` all map to `#1` with different concentrations. Repeating the same label in multiple wells creates replicates. Final concentration may be a number or an `@ColumnLetter` reference into `LIB`.
 
-When using blacklisting, make the final row of the `Labels` table an appropriate fill control, such as `fill` → `vehicle`, because PickliPy uses the final label row to fill movable positions that become free after a rejected compound group is moved.
+Screen runtime randomization is opt-in:
+
+```bash
+python -m PickliPy.Screen design.xlsx --randomize-wells true --no-pause
+```
+
+`-r` and `--randomize_wells` are equivalent switch names. With randomization enabled:
+
+- Each destination barcode is randomized independently with a deterministic seed derived from the design-file basename and destination barcode.
+- Only wells with actual resolved dispenses are permuted, so empty slots on a partial final plate remain empty and the used-well set is unchanged.
+- Replicate identity is the complete resolved treatment, including every co-dispensed identifier and final concentration, rather than the raw plate-map label.
+- Different labels that resolve to the same treatment and concentration are treated as replicates, while different dose levels are distinct treatments.
+- The algorithm prioritizes non-orthogonally-adjacent replicate placement and then maximizes replicate separation within each layout-label pool; an infeasible strict placement is reported as an error.
+- Controls with actual dispenses participate in randomization. Give a control well a unique `Layout:` label when it must remain fixed.
+- Picklist targets, `table merge.txt`, `plate map compounds.txt`, and `plate map concentrations.txt` all use the randomized coordinates.
+
+In a helper JSON spec, a `slot_layout` may set `randomization_layout_mode` to `none`, `all`, `halves`, or `quadrants`. These presets split the full 16 × 24 canvas; use a custom map for 96-well half/quadrant boundaries. When a preset map is generated, `pin_controls_for_randomization` defaults to `true` and assigns every generated control well a unique layout label; set it to `false` only when controls should participate. A custom layout may instead provide `randomization_layout` (or `layout_map`) as a well-to-label mapping or 16 × 24 grid. Keep the separate `groups` field for `DST_Blacklist` movable positions.
+
+The current Python Screen path removes zero-concentration label rows and does not use a final fill-label row during blacklist compaction. Do not rely on a `fill` label to populate freed wells.
 
 ### Screen `LIB` worksheet and shortlisting
 
@@ -207,17 +230,19 @@ The optional `DST_Blacklist` worksheet supports quality-controlled dispensing af
 It contains:
 
 1. `Groups:` plus a 16 × 24 group map.
-2. `Barcode_DST` and `Well` rows, where each destination barcode has a comma-separated list of rejected wells.
+2. A `Well Blacklist:` marker row containing `Barcode_DST` and `Well` headers, followed by one row per destination barcode with a comma-separated list of rejected wells.
 
 Group-map rules:
 
 - Empty group-map cell means fixed/unmovable. Use empty cells for controls and any positions that should be rejected rather than relocated.
-- A group label such as `1`, `2`, `left`, or `right` means positions may be relocated only within that group.
+- A non-empty group-map cell marks a movable/available blacklist position. The current shift-based Python path does not enforce different group-label text as separate relocation pools; use `Layout:` for randomization boundaries and validate blacklist compaction separately when regional isolation matters.
 - Label only the used area of the plate. Do not label controls unless you intentionally allow controls to be relocated.
-- If one compound appears in multiple wells, e.g. replicates or dose levels, the full compound group is moved together to the next plate; the script does not split a compound group across destination plates.
+- If one library item appears in multiple wells, verify replicate/dose cardinality after blacklisting; current shift-based compaction can truncate a repeated group when surviving capacity cuts through it.
 - Blacklisted wells are marked as `rejected` in merge/map outputs.
 
-Use group maps to encode experimental constraints. For example, if the left half and right half are different cell types receiving matched library compounds, use group `left` for left-half library wells and group `right` for right-half library wells. Leave shared controls ungrouped.
+Blacklist removal/compaction is resolved before runtime randomization. Rejected physical coordinates stay rejected and are never remapped. `DST!Layout:` still enforces the subsequent randomization boundary, but the current shift-based blacklist path does not enforce distinct `Groups:` text as regional pools; validate or separate blacklist handling when that isolation is required.
+
+Use the group map to mark positions available for blacklist compaction, leaving fixed controls blank. Encode left/right, cell-type, or other hard randomization boundaries in `DST!Layout:`; do not depend on distinct group-label text for that isolation in the current shift-based Python path.
 
 ## Layout advice by experimental goal
 
@@ -225,15 +250,16 @@ Use group maps to encode experimental constraints. For example, if the left half
 - **Dose response:** put concentrations along columns if the imaging/readout scans by rows; put concentrations along rows if users visually interpret by columns. Keep vehicle and positive controls on both sides of the dose series.
 - **Combinatorial matrix:** use one axis per perturbation and ensure the `Labels` table contains all component labels. For multi-compound dose-response combinatorics, use multiple Assay sections with the same picklist name.
 - **Library screen with controls:** reserve edge wells or regular sentinel wells for vehicle, positive, and negative controls. Thread library slots through the remaining wells in a deterministic order.
-- **Two cell types on one plate:** split the map into halves or quadrants, duplicate each library slot once per group, and use `DST_Blacklist` group labels matching those halves/quadrants.
-- **QC blacklisting expected:** include spare movable wells in the same group if possible, and choose the final `Labels` row as a benign fill treatment.
+- **Randomized library screen:** use a `Layout:` map for cell-type, batch, or plate-region boundaries. Reuse the same layout label throughout a region; use a unique label to pin a well. Replicate spacing is optimized only among wells in the same label pool.
+- **Two cell types on one plate:** split the map into halves or quadrants, duplicate each library slot once per region, and use matching DST `Layout:` labels for runtime randomization. The current blacklist compaction path does not preserve distinct `Groups:` text as regional boundaries, so validate or separate blacklist handling for this design.
+- **QC blacklisting expected:** include spare movable wells and validate replicate/dose cardinality in the generated merge and plate-map outputs before dispensing.
 - **96-well destination plate:** use only the upper-left 8 × 12 coordinates. Do not accidentally populate rows I:P or columns 13:24.
 - **High-volume transfers:** recommend increasing stock concentration where feasible, using PP source plates when appropriate, or confirming that the generator/method can split transfers above the LDV single-dispense limit.
 
 ## Recommended workflow for Codex
 
 1. Interpret the user’s experimental goal and choose Assay, Screen, or hybrid.
-2. Identify destination format, well volume, source plate format, minimum source volume, source stocks, destination barcodes, controls, number of replicates, and whether QC blacklisting is needed.
+2. Identify destination format, well volume, source plate format, minimum source volume, source stocks, destination barcodes, controls, number of replicates, whether runtime randomization is wanted, required `Layout:` boundaries or pinned wells, and whether QC blacklisting is needed.
 3. Propose the plate layout in words and identify any tradeoffs.
 4. Use `scripts/picklipy_design_builder.py` to create a workbook when the user wants an actual `.xlsx` design file.
 5. Run the helper’s `validate` command on generated files.

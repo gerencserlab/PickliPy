@@ -1,16 +1,17 @@
 from __future__ import annotations
 
-"""Well randomization utilities for PickliPy.Assay.
+"""Well randomization utilities for PickliPy.Assay and PickliPy.Screen.
 
 This module is intentionally self-contained so that alternative randomization
-strategies can be implemented later without touching the main Assay workflow.
+strategies can be implemented later without touching the main workflows.
 
 The core concept is a *well map* (a permutation): a dict mapping
     original_well -> randomized_well
 
-The Assay workflow applies this mapping consistently across all plate maps that
-target the same destination plate barcode so that the *entire treatment*
-(potentially spanning multiple sequential additions) moves together.
+The Assay and Screen workflows apply this mapping consistently to dispense
+targets and their coordinate-bearing metadata. Assay also uses one mapping
+across all additions that target the same destination plate barcode so that the
+entire multi-addition treatment moves together.
 
 Randomization is restricted to the set of wells that receive any treatment.
 If a layout map is provided, wells are randomized *within each layout label*
