@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
@@ -60,6 +61,234 @@ class _ScreenHeader:
     barcodes_dst: List[str]
     well_volume_ul: float
     min_volume_ul: float
+
+
+@dataclass(frozen=True)
+class _LibReferenceColumns:
+    well: Tuple[int, ...]
+    stock: Tuple[int, ...]
+    barcode: Tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class _ReformattedLibDispense:
+    lib_row_index: int
+    destination_barcode: str
+    destination_well: str
+    volume_nl: float
+    stock_concentration: float
+    source_barcode: str
+    source_well: str
+
+
+def _at_reference_columns(value: Any, lib_column_count: int) -> Tuple[int, ...]:
+    """Return zero-based LIB columns referenced by an SRC cell."""
+
+    columns: List[int] = []
+    for column_letters in re.findall(r"@([A-Za-z]+)", as_str(value)):
+        column_index = excel_col_to_number(column_letters) - 1
+        if 0 <= column_index < lib_column_count and column_index not in columns:
+            columns.append(column_index)
+    return tuple(columns)
+
+
+def _lib_references_for_src_row(
+    src_row: Sequence[Any],
+    lib_column_count: int,
+) -> _LibReferenceColumns:
+    def cell(column_index: int) -> Any:
+        return src_row[column_index] if column_index < len(src_row) else ""
+
+    return _LibReferenceColumns(
+        well=_at_reference_columns(cell(0), lib_column_count),
+        stock=_at_reference_columns(cell(2), lib_column_count),
+        barcode=_at_reference_columns(cell(5), lib_column_count),
+    )
+
+
+def _common_lib_references(
+    src_rows: Sequence[Sequence[Any]],
+    lib_column_count: int,
+    *,
+    using_backfill: bool,
+) -> _LibReferenceColumns:
+    """Resolve one unambiguous LIB column mapping for the export schema."""
+
+    # addcompound consumes a LIB row whenever any SRC cell contains an @
+    # reference. Fully fixed explicit controls are irrelevant to the export
+    # schema; every LIB-consuming row, including a partial mapping, must agree.
+    references = [
+        _lib_references_for_src_row(row, lib_column_count)
+        for row in src_rows
+        if any("@" in as_str(cell) for cell in row)
+    ]
+
+    def common_columns(role: str, display_name: str) -> Tuple[int, ...]:
+        mappings: List[Tuple[int, ...]] = []
+        for reference in references:
+            columns = getattr(reference, role)
+            if columns not in mappings:
+                mappings.append(columns)
+        if len(mappings) > 1:
+            human_mappings = [
+                tuple(column + 1 for column in mapping)
+                for mapping in mappings
+            ]
+            raise PicklyPyConfigError(
+                "Reformatted LIB export requires one consistent SRC @ mapping "
+                f"for {display_name}; found LIB column sets {human_mappings}."
+            )
+        return mappings[0] if mappings else ()
+
+    return _LibReferenceColumns(
+        well=common_columns("well", "Source Well"),
+        stock=(
+            common_columns("stock", "Stock concentration")
+            if using_backfill
+            else ()
+        ),
+        barcode=common_columns("barcode", "Plate barcode"),
+    )
+
+
+def _write_reformatted_lib_workbook(
+    output_path: Path,
+    *,
+    lib: Sequence[Sequence[Any]],
+    dispenses: Sequence[_ReformattedLibDispense],
+    total_volume_nl_by_destination: Mapping[Tuple[str, str], float],
+    destination_order: Sequence[str],
+    using_backfill: bool,
+    references: _LibReferenceColumns,
+) -> None:
+    """Write the daughter-library view of actual Screen dispense events."""
+
+    lib_rows = [list(row) for row in lib]
+    if not lib_rows:
+        lib_rows = [[]]
+    lib_column_count = max((len(row) for row in lib_rows), default=0)
+    original_headers = list(lib_rows[0]) + [""] * (
+        lib_column_count - len(lib_rows[0])
+    )
+
+    all_well_columns = list(references.well)
+    all_barcode_columns = list(references.barcode)
+    all_stock_columns = list(references.stock)
+
+    header_annotations: Dict[int, List[str]] = {}
+    for column in all_well_columns:
+        header_annotations.setdefault(column, []).append("Dispense destination well")
+    for column in all_barcode_columns:
+        header_annotations.setdefault(column, []).append(
+            "Dispense destination barcode"
+        )
+    if using_backfill:
+        for column in all_stock_columns:
+            header_annotations.setdefault(column, []).append(
+                "Concentration after dispense"
+            )
+
+    output_headers = list(original_headers)
+    for column, annotations in header_annotations.items():
+        original_header = as_str(original_headers[column]).strip()
+        if original_header == "":
+            original_header = f"LIB column {column + 1}"
+        output_headers[column] = f"{original_header} ({'; '.join(annotations)})"
+
+    # A Screen design normally references LIB columns for source well and
+    # source barcode. Preserve useful destination coordinates even for a
+    # non-standard template that consumes LIB rows through another @ field.
+    add_destination_well_column = not all_well_columns
+    add_destination_barcode_column = not all_barcode_columns
+    if add_destination_well_column:
+        output_headers.append("Destination well (Dispense destination well)")
+    if add_destination_barcode_column:
+        output_headers.append(
+            "Destination plate barcode (Dispense destination barcode)"
+        )
+
+    output_headers.extend(
+        [
+            "Dispense volume (nL)",
+            "Original source well",
+            "Original source plate barcode",
+        ]
+    )
+
+    destination_rank = {
+        barcode: index for index, barcode in enumerate(destination_order)
+    }
+    indexed_dispenses = list(enumerate(dispenses))
+
+    def dispense_sort_key(
+        item: Tuple[int, _ReformattedLibDispense],
+    ) -> Tuple[int, int, int, int]:
+        sequence, event = item
+        try:
+            row, column = parse_well_name(event.destination_well)
+        except ValueError:
+            row, column = (10**9, 10**9)
+        return (
+            destination_rank.get(event.destination_barcode, 10**9),
+            row,
+            column,
+            sequence,
+        )
+
+    output_rows: List[List[Any]] = []
+    for _sequence, event in sorted(indexed_dispenses, key=dispense_sort_key):
+        if event.lib_row_index <= 0 or event.lib_row_index >= len(lib_rows):
+            raise PicklyPyConfigError(
+                "Cannot create reformatted LIB row: resolved LIB row index "
+                f"{event.lib_row_index} is outside the imported LIB worksheet."
+            )
+
+        original_row = list(lib_rows[event.lib_row_index]) + [""] * (
+            lib_column_count - len(lib_rows[event.lib_row_index])
+        )
+        output_row = list(original_row)
+
+        for column in references.well:
+            output_row[column] = event.destination_well
+        for column in references.barcode:
+            output_row[column] = event.destination_barcode
+
+        if using_backfill and references.stock:
+            total_volume_nl = total_volume_nl_by_destination.get(
+                (event.destination_barcode, event.destination_well),
+                0.0,
+            )
+            resulting_concentration = 0.0
+            if total_volume_nl > 0:
+                resulting_concentration = (
+                    event.stock_concentration
+                    * event.volume_nl
+                    / total_volume_nl
+                )
+            for column in references.stock:
+                output_row[column] = integer_chop(resulting_concentration)
+
+        if add_destination_well_column:
+            output_row.append(event.destination_well)
+        if add_destination_barcode_column:
+            output_row.append(event.destination_barcode)
+
+        output_row.extend(
+            [
+                integer_chop(event.volume_nl),
+                event.source_well,
+                event.source_barcode,
+            ]
+        )
+        output_rows.append(output_row)
+
+    workbook = openpyxl.Workbook()
+    worksheet = workbook.active
+    worksheet.title = "LIB"
+    worksheet.append(output_headers)
+    for row in output_rows:
+        worksheet.append(row)
+    workbook.save(output_path)
 
 
 def _print_banner() -> None:
@@ -345,6 +574,115 @@ def _round_dispense_nl(desired_nl: float) -> float:
     return round_to_increment(desired_nl, 2.5)
 
 
+def _allocate_randomized_blacklist_plate(
+    *,
+    plate_pairs: Sequence[Tuple[str, str]],
+    valid_wells: Sequence[str],
+    blacklisted_wells: set[str],
+    layout_by_well: Mapping[str, str],
+    labels_data: Sequence[Sequence[Any]],
+    explicit_compounds: set[str],
+    barcode: str,
+) -> List[Tuple[str, str]]:
+    """Reserve controls, then fit complete library sets within physical Layout pools.
+
+    Group-map text does not define pools here. As with randomization itself,
+    absent/blank Layout labels form one pool. Library cells sharing a compound
+    slot are indivisible, including dose aliases and connected combinations.
+    LIB is resolved only after allocation, so omitted slots consume no LIB rows.
+    """
+    compounds_by_label: Dict[str, set[str]] = {}
+    for row in labels_data:
+        compounds_by_label.setdefault(as_str(row[0]), set()).add(as_str(row[1]))
+
+    controls: List[Tuple[str, str]] = []
+    library: List[Tuple[str, str]] = []
+    library_compounds: List[set[str]] = []
+    includes_control: List[bool] = []
+    for well, cell in plate_pairs:
+        compounds: set[str] = set()
+        for label in split_labels(cell):
+            if label not in compounds_by_label:
+                raise PicklyPyConfigError(
+                    f"Plate-map label {label!r} is not defined in the Labels table."
+                )
+            compounds.update(compounds_by_label[label])
+        if compounds and compounds <= explicit_compounds:
+            controls.append((well, cell))
+        else:
+            library.append((well, cell))
+            library_compounds.append(compounds - explicit_compounds)
+            includes_control.append(bool(compounds & explicit_compounds))
+
+    control_wells = {well for well, _ in controls}
+    pools: Dict[str, List[str]] = {}
+    for well in dict.fromkeys(valid_wells):
+        if well not in blacklisted_wells and well not in control_wells:
+            pools.setdefault(layout_by_well.get(well, ""), []).append(well)
+
+    result: List[Tuple[str, str]] = []
+    for well, cell in controls:
+        if well not in blacklisted_wells:
+            result.append((well, cell))
+            continue
+        pool = pools.get(layout_by_well.get(well, ""), [])
+        if not pool:
+            raise PicklyPyConfigError(
+                f"Cannot preserve control {cell!r} from {well} on destination plate "
+                f"{barcode}: no healthy replacement in its Layout group "
+                f"{layout_by_well.get(well, '')!r}. A uniquely pinned control cannot move."
+            )
+        replacement = pool.pop(0)
+        result.append((replacement, cell))
+        print(f"Replacing blacklisted control {well} ({cell}) with {replacement} on {barcode}")
+
+    # Union cells that share any library compound. Multiple Labels rows and
+    # multi-label cells can connect otherwise separate replicate/dose sets.
+    parents = list(range(len(library)))
+
+    def root(index: int) -> int:
+        while parents[index] != index:
+            parents[index] = parents[parents[index]]
+            index = parents[index]
+        return index
+
+    first_cell_by_compound: Dict[str, int] = {}
+    for index, compounds in enumerate(library_compounds):
+        for compound in compounds:
+            previous = first_cell_by_compound.setdefault(compound, index)
+            parents[root(index)] = root(previous)
+    bundles: Dict[int, List[int]] = {}
+    for index in range(len(library)):
+        bundles.setdefault(root(index), []).append(index)
+
+    assigned_library_wells = 0
+    for indices in bundles.values():
+        required: Dict[str, int] = {}
+        for index in indices:
+            group = layout_by_well.get(library[index][0], "")
+            required[group] = required.get(group, 0) + 1
+        if any(len(pools.get(group, [])) < count for group, count in required.items()):
+            if any(includes_control[index] for index in indices):
+                raise PicklyPyConfigError(
+                    f"Cannot preserve controls co-dispensed with a complete library "
+                    f"replicate/dose set on destination plate {barcode}: insufficient "
+                    "healthy wells in its Layout groups."
+                )
+            continue
+        for index in indices:
+            original_well, cell = library[index]
+            group = layout_by_well.get(original_well, "")
+            result.append((pools[group].pop(0), cell))
+            assigned_library_wells += 1
+
+    if library and not assigned_library_wells:
+        raise PicklyPyConfigError(
+            f"No complete library replicate/dose set fits on destination plate {barcode} "
+            "after preserving controls within Layout groups."
+        )
+    return result
+
+
 def _build_treatment_signatures_for_randomization(
     *,
     plate_pairs: Sequence[Tuple[str, str]],
@@ -394,7 +732,18 @@ def generate_screening_picklist(
     src, dst, lib, blk = _load_design_sheets(xlsx_path)
     header = _parse_header(dst, src)
     backfill_override = normalize_backfill_override(backfill_name, backfill_volume)
-
+    src_data_rows = src[1:] if len(src) > 1 else []
+    wildcard_reference_rows = [
+        row for row in src_data_rows if len(row) > 1 and as_str(row[1]) == "*"
+    ]
+    if wildcard_reference_rows:
+        reference_schema_rows = [wildcard_reference_rows[0]] + [
+            row
+            for row in src_data_rows
+            if not as_str(row[0]).startswith("@")
+        ]
+    else:
+        reference_schema_rows = src_data_rows
     # Survey volumes (optional)
     survey = load_survey_volumes(xlsx_path.parent)
     vols_ul = survey.volumes_ul
@@ -479,6 +828,12 @@ def generate_screening_picklist(
             reserved_indices,
             context="Screen design",
         )
+    )
+    using_backfill = backfill_override is not None or workbook_backfill is not None
+    reformatted_lib_references = _common_lib_references(
+        reference_schema_rows,
+        len(lib[0]) if lib else 0,
+        using_backfill=using_backfill,
     )
     configured_backfill_compound = (
         backfill_override.compound_name
@@ -574,6 +929,9 @@ def generate_screening_picklist(
     table_merge_rows: List[List[Any]] = []
     table_merge_rows_blk: List[List[Any]] = []
     conditionlabels: Dict[str, List[List[Any]]] = {}  # dst barcode -> 16x24 table of "" or (name, concs)
+    reformatted_lib_dispenses: List[_ReformattedLibDispense] = []
+    total_volume_nl_by_destination: Dict[Tuple[str, str], float] = {}
+    lib_references_by_index: Dict[int, _LibReferenceColumns] = {}
 
     # Support variables for blacklist within each destination plate
     def fix_one_blacklisted_well(
@@ -637,7 +995,11 @@ def generate_screening_picklist(
     def addcompound(srcline: List[Any]) -> Optional[List[Any]]:
         nonlocal lib_index
 
-        if lib_index >= len(lib) - 1:
+        # Randomized runs must still resolve explicit controls after the last
+        # LIB-backed SRC row, including named templates with controls listed last.
+        if lib_index >= len(lib) - 1 and (
+            not randomize_wells or any("@" in as_str(value) for value in srcline)
+        ):
             return None
 
         # Copy row, pad to at least 7 columns (to preserve 'new' flag column).
@@ -672,11 +1034,19 @@ def generate_screening_picklist(
 
             return re.sub(r"@([A-Za-z]+)", repl, s)
 
-        import re
-
         new_row = [_sub_cell(v) for v in row]
-        # Append lib_index (matches Wolfram addcompound)
-        new_row.append(lib_index)
+        # Only rows that actually dereferenced LIB receive LIB provenance.
+        # Explicit controls otherwise inherit the running index and can be
+        # mistaken for a library row on later destination plates.
+        resolved_lib_index = lib_index if lib_row_used is not None else 0
+        new_row.append(resolved_lib_index)
+        if resolved_lib_index > 0:
+            lib_references_by_index[resolved_lib_index] = (
+                _lib_references_for_src_row(
+                    srcline,
+                    len(lib[0]) if lib else 0,
+                )
+            )
         return new_row
 
     lastbarcode: str = ""
@@ -757,35 +1127,48 @@ def generate_screening_picklist(
             if w not in blacklisted_set and w not in control_wells
         ]
 
-        # Build b_pairs for this plate: controls at fixed positions + library labels into available wells
+        # Non-randomized allocation retains the legacy fixed-control behavior.
+        # With randomization and rejected wells, reserve replacements first and
+        # allocate complete library sets before consuming any LIB rows.
         b_pairs: List[Tuple[str, str]] = []
 
-        # Add control pairs (skip if control well is blacklisted on this plate)
-        for w, lab in control_pairs:
-            if w not in blacklisted_set:
-                b_pairs.append((w, lab))
-            else:
-                print(f"Warning: control well {w} ({lab}) is blacklisted on {barcode_dst}, skipping control")
+        if randomize_wells and blacklisted_set:
+            b_pairs = _allocate_randomized_blacklist_plate(
+                plate_pairs=b0,
+                valid_wells=valid_well_template,
+                blacklisted_wells=blacklisted_set,
+                layout_by_well=layout_by_well,
+                labels_data=labels_data,
+                explicit_compounds=explicit_compounds,
+                barcode=barcode_dst,
+            )
+        else:
+            # Add control pairs (skip if control well is blacklisted on this plate)
+            for w, lab in control_pairs:
+                if w not in blacklisted_set:
+                    b_pairs.append((w, lab))
+                else:
+                    print(f"Warning: control well {w} ({lab}) is blacklisted on {barcode_dst}, skipping control")
 
-        # Labels to assign: carried-forward first, then fresh from template
-        labels_to_assign: List[str] = list(carry_forward_labels)
-        carry_forward_labels = []
+            # Labels to assign: carried-forward first, then fresh from template
+            labels_to_assign: List[str] = list(carry_forward_labels)
+            carry_forward_labels = []
 
-        # Fill remaining wells from the repeating label template
-        template_idx = 0
-        while len(labels_to_assign) < len(available_wells) and template_idx < len(library_labels):
-            labels_to_assign.append(library_labels[template_idx])
-            template_idx += 1
+            # Fill remaining wells from the repeating label template
+            template_idx = 0
+            while len(labels_to_assign) < len(available_wells) and template_idx < len(library_labels):
+                labels_to_assign.append(library_labels[template_idx])
+                template_idx += 1
 
-        # Assign labels to available wells
-        for i, w in enumerate(available_wells):
-            if i < len(labels_to_assign):
-                b_pairs.append((w, labels_to_assign[i]))
+            # Assign labels to available wells
+            for i, w in enumerate(available_wells):
+                if i < len(labels_to_assign):
+                    b_pairs.append((w, labels_to_assign[i]))
 
-        # Any leftover labels carry forward
-        if len(labels_to_assign) > len(available_wells):
-            carry_forward_labels = labels_to_assign[len(available_wells):]
-            print(f"Carrying forward {len(carry_forward_labels)} displaced labels to next plate")
+            # Any leftover labels carry forward
+            if len(labels_to_assign) > len(available_wells):
+                carry_forward_labels = labels_to_assign[len(available_wells):]
+                print(f"Carrying forward {len(carry_forward_labels)} displaced labels to next plate")
 
         print(f"Plate {barcode_dst}: {len(available_wells)} available wells, {len([p for p in b_pairs if p[1] not in control_labels])} library compounds assigned")
 
@@ -835,6 +1218,14 @@ def generate_screening_picklist(
             src2_seed = explicit_rows + blank_rows
         else:
             src2_seed = src_rows
+            if randomize_wells and blacklisted_set:
+                # Named LIB-backed SRC templates, like wildcard expansions,
+                # must not consume a LIB row for a slot omitted by allocation.
+                src2_seed = [
+                    row for row in src_rows
+                    if as_str(row[1]) in compounds_used
+                    or not any("@" in as_str(value) for value in row)
+                ]
 
         # Apply addcompound to seed rows
         src2: List[List[Any]] = []
@@ -1094,6 +1485,7 @@ def generate_screening_picklist(
             ]
         ] = []
         normal_events_all: List[Tuple[str, List[str], float]] = []
+        plate_reformatted_lib_dispenses: List[_ReformattedLibDispense] = []
         for plate_i, plate in enumerate(barcodes_src_ordered):
             label_defs = {}
             for lab, srcinfo, final in labellists_by_src[plate_i]:
@@ -1105,7 +1497,7 @@ def generate_screening_picklist(
             for dstwell, lab in c_pairs_use:
                 if lab not in label_defs:
                     continue
-                for (wells, stock, _libi), final in label_defs[lab]:
+                for (wells, stock, libi), final in label_defs[lab]:
                     desired_nl = 1000.0 * header.well_volume_ul * (final / stock)
                     vol_nl = _round_dispense_nl(desired_nl)
                     # Rounding warning (matches WL, uses Max[2.5, Round] in message)
@@ -1121,6 +1513,20 @@ def generate_screening_picklist(
                             warnings = True
 
                     cl_events.append((dstwell, wells, vol_nl))
+
+                    lib_references = lib_references_by_index.get(libi)
+                    if vol_nl > 0 and libi > 0 and lib_references is not None:
+                        plate_reformatted_lib_dispenses.append(
+                            _ReformattedLibDispense(
+                                lib_row_index=libi,
+                                destination_barcode=barcode_dst,
+                                destination_well=dstwell,
+                                volume_nl=vol_nl,
+                                stock_concentration=stock,
+                                source_barcode=plate,
+                                source_well=wells[0],
+                            )
+                        )
 
                     # Merge table / plate map metadata uses first source well -> identifier
                     ident = src_name.get(plate, {}).get(wells[0], wells[0])
@@ -1205,6 +1611,19 @@ def generate_screening_picklist(
                 f"{backfill_plate}, target total transfer {active_backfill_target_nl:g} nL "
                 f"({len(topups)} wells topped up)."
             )
+
+        # Final daughter-well volumes include every actual positive transfer,
+        # including combinations, explicit co-dispenses, and native backfill.
+        # LIB-backed normal events use these totals for post-backfill dilution.
+        for cl_events, _clname_events in event_plans:
+            for dstwell, _wells, volume_nl in cl_events:
+                if volume_nl <= 0:
+                    continue
+                key = (barcode_dst, dstwell)
+                total_volume_nl_by_destination[key] = (
+                    total_volume_nl_by_destination.get(key, 0.0) + volume_nl
+                )
+        reformatted_lib_dispenses.extend(plate_reformatted_lib_dispenses)
 
         # Generate metadata and picklist rows in the original source-plate order.
         for plate_i, plate in enumerate(barcodes_src_ordered):
@@ -1375,6 +1794,20 @@ def generate_screening_picklist(
     print(f"Saving: {compounds_path}")
     print(f"Saving: {conc_path}")
 
+    reformatted_lib_path = (
+        out_dir / f"{xlsx_path.stem}_reformatted_LIB.xlsx"
+    )
+    _write_reformatted_lib_workbook(
+        reformatted_lib_path,
+        lib=lib,
+        dispenses=reformatted_lib_dispenses,
+        total_volume_nl_by_destination=total_volume_nl_by_destination,
+        destination_order=dst_unique,
+        using_backfill=using_backfill,
+        references=reformatted_lib_references,
+    )
+    print(f"Saving: {reformatted_lib_path}")
+
     # Summary
     print("\nRun complete.")
     print(f"CellPlateCount (destination plates): {len(dst_unique)}")
@@ -1428,8 +1861,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         metavar="{true|false}",
         help=(
             "Randomize destination well positions independently for each destination plate barcode. "
-            "Only genuinely used wells are permuted. If a Layout: map is present in the DST worksheet, "
-            "wells move only among positions with the same Layout label."
+            "Only used wells are permuted. If a Layout: map is present in the DST worksheet, "
+            "wells move only among positions with the same Layout label. With blacklisting, "
+            "preserve control counts by reserving healthy replacements within those groups, "
+            "then fit complete library replicate/dose sets; extra destination plates may be needed. "
+            "Fail if controls cannot be preserved."
         ),
     )
 
