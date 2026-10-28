@@ -105,6 +105,14 @@ python -m PickliPy.Screen -f /path/to/picklist-screening.xlsx
 For compatibility with existing pipelines, Screen also accepts the design file
 as its positional argument when `-f/--file` is omitted.
 
+Use `--flush_dst_after_src [true|false]` (also `--flush-dst-after-src`) to
+start a fresh destination whenever the resolved LIB source barcode changes.
+A bare flag enables it; the default allows source plates to share destinations.
+LIB order is preserved, so provide enough destination barcodes for partial plates.
+Controls and intermediate transfers can still share the destination. This can be
+combined with `--intermediate_dilution` and `--randomize_wells true`; see the
+[Screen guide](Screening_picklist_generator.md) for allocation details.
+
 ### Bluetable
 
 ```bash
@@ -207,6 +215,7 @@ Important constraints:
 
 - The **LIB** table must be ordered by **source plate barcode** (Plate:Works limitation: once a source plate is completed, it cannot be revisited later in the run).
 - The entire library table is dispensed; to dispense a subset, remove rows from LIB.
+- With `--randomize-wells true`, blacklisted controls are replaced in healthy eligible wells within the same `DST!Layout:` group before complete library replicate/dose sets are allocated. Fewer compounds may fit per plate, requiring additional destination barcodes. A blank/absent layout is one shared pool; a uniquely pinned blacklisted control or insufficient group capacity causes an error. Without randomization, controls stay fixed and blacklisted controls are skipped as before.
 
 ### Outputs
 
@@ -216,6 +225,7 @@ Screen produces, next to the input workbook:
 - Inventory and process files (`Inventory_*.csv`, `Process_*.txt`)
 - Loop / parameter files used by the Plate:Works screening protocol (module-dependent naming)
 - “merge table” and destination plate maps for compounds and concentrations (for downstream analysis)
+- `<design stem>_reformatted_LIB.xlsx`, containing one expanded `LIB` sheet with actual destination wells/barcodes, per-addition dispense volumes, and original source coordinates
 - Summary counts printed to the console (destination plate count, library plate count, total dispense events)
 
 ---
