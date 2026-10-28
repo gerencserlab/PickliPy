@@ -98,12 +98,14 @@ def _score_assignment(
     *,
     assigned_wells_by_treatment: Mapping[str, Sequence[str]],
     coords_by_well: Mapping[str, Tuple[int, int]],
+    adjacency_exempt_treatments: frozenset[str] = frozenset(),
 ) -> Tuple[int, float]:
     """Return (adjacency_violations, score).
 
     score is the sum of minimum pairwise distances for each replicated treatment.
-    adjacency_violations counts how many replicated treatments end up with at
-    least one orthogonally adjacent replicate pair.
+    adjacency_violations counts non-exempt replicated treatments with at least
+    one orthogonally adjacent replicate pair. Exempt controls still contribute
+    to the distance score.
     """
 
     violations = 0
@@ -112,7 +114,7 @@ def _score_assignment(
         if len(wells) <= 1:
             continue
         coords = [coords_by_well[w] for w in wells]
-        if _has_adjacent_pair(coords):
+        if _treat not in adjacency_exempt_treatments and _has_adjacent_pair(coords):
             violations += 1
         score += _min_pairwise_distance(coords)
     return violations, score
@@ -143,6 +145,7 @@ def _attempt_group_assignment(
     treatment_by_well: Mapping[str, str],
     rng: random.Random,
     forbid_adjacent_replicates: bool,
+    adjacency_exempt_treatments: frozenset[str] = frozenset(),
 ) -> Optional[Dict[str, List[str]]]:
     """Greedy attempt to assign treatments to wells.
 
@@ -165,8 +168,11 @@ def _attempt_group_assignment(
     replicated: List[str] = [t for t in treatments if len(orig_by_treat[t]) > 1]
     singletons: List[str] = [t for t in treatments if len(orig_by_treat[t]) == 1]
 
-    # Process replicated treatments first (largest groups first, randomized tie-break)
-    replicated.sort(key=lambda t: (-len(orig_by_treat[t]), rng.random()))
+    # Place strictly constrained replicate groups before exempt controls;
+    # within each class, use largest groups first and randomized tie-breaks.
+    replicated.sort(key=lambda t: (
+        t in adjacency_exempt_treatments, -len(orig_by_treat[t]), rng.random()
+    ))
 
     available = list(wells)
     rng.shuffle(available)
@@ -195,7 +201,7 @@ def _attempt_group_assignment(
             ]
 
             if not cand:
-                if forbid_adjacent_replicates:
+                if forbid_adjacent_replicates and t not in adjacency_exempt_treatments:
                     return None
                 cand = list(available)
 
@@ -226,6 +232,7 @@ def optimize_plate_well_map(
     seed: Optional[int] = None,
     attempts: int = 200,
     forbid_adjacent_replicates: bool = True,
+    adjacency_exempt_treatments: Optional[Iterable[str]] = None,
 ) -> Dict[str, str]:
     """Create a well randomization map for a plate.
 
@@ -248,9 +255,14 @@ def optimize_plate_well_map(
     forbid_adjacent_replicates:
         If True, replicate wells (same treatment) are forbidden to be
         orthogonally adjacent.
+    adjacency_exempt_treatments:
+        Exact treatment signatures allowed to have adjacent replicates. They
+        still participate in spreading, after placing strictly constrained
+        replicate groups. No additional destination wells are introduced.
     """
 
     rng = random.Random(seed)
+    exempt_treatments = frozenset(adjacency_exempt_treatments or ())
 
     # Determine wells that actually receive any treatment.
     used_wells: List[str] = [w for w, t in treatment_by_well.items() if str(t).strip() != ""]
@@ -293,6 +305,7 @@ def optimize_plate_well_map(
                 treatment_by_well=treatment_by_well,
                 rng=rng,
                 forbid_adjacent_replicates=forbid_adjacent_replicates,
+                adjacency_exempt_treatments=exempt_treatments,
             )
             if assigned is None:
                 continue
@@ -300,6 +313,7 @@ def optimize_plate_well_map(
             violations, score = _score_assignment(
                 assigned_wells_by_treatment=assigned,
                 coords_by_well=coords_by_well,
+                adjacency_exempt_treatments=exempt_treatments,
             )
 
             # Build old->new mapping (pair instances per treatment)

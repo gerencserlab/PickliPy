@@ -83,7 +83,7 @@ Use native backfill to equalize total Echo transfer volume without placing a veh
 - Add nothing when a well already receives the target volume or more.
 - Resolve the vehicle by exact `SRC` compound label and apply normal source minimum-volume checks. Screen uses the first resolved source plate in source order and switches among equivalent vehicle wells on that plate.
 - In Screen, sum normal events across every contributing source plate before backfill. In Assay, each addition section is balanced independently; avoid overlapping same-picklist sections with native backfill unless section-local balancing is intentional.
-- Keep native backfill operational: it appears in the Echo picklist and source-volume accounting, but not in treatment labels, treatment signatures, merge rows, or compound/concentration condition maps. With randomization enabled, its destination follows the randomized normal treatment.
+- Keep native backfill operational: it appears in the Echo picklist and source-volume accounting, but not in treatment labels, treatment signatures, merge rows, or compound/concentration condition maps. It does not create its own reformatted-LIB row, although its volume contributes to daughter-well concentration calculations. With randomization enabled, its destination follows the randomized normal treatment.
 
 The paired CLI override takes precedence over the workbook row. Its volume is the target total per treated well, not the amount of vehicle to add, and is normalized to the Echo 2.5 nL increment:
 
@@ -237,9 +237,10 @@ design-file argument remains valid when `-f/--file` is omitted. `-r` and
 - Only wells with actual resolved dispenses are permuted, so empty slots on a partial final plate remain empty and the used-well set is unchanged.
 - Replicate identity is the complete resolved treatment, including every co-dispensed identifier and final concentration, rather than the raw plate-map label.
 - Different labels that resolve to the same treatment and concentration are treated as replicates, while different dose levels are distinct treatments.
-- The algorithm prioritizes non-orthogonally-adjacent replicate placement and then maximizes replicate separation within each layout-label pool; an infeasible strict placement is reported as an error.
-- Controls with actual dispenses participate in randomization. Give a control well a unique `Layout:` label when it must remain fixed.
-- Picklist targets, `table merge.txt`, `plate map compounds.txt`, and `plate map concentrations.txt` all use the randomized coordinates.
+- The algorithm first requires non-orthogonally-adjacent replicates and maximizes separation within each layout-label pool. If strict Screen randomization fails, it warns and retries allowing adjacent explicit DMSO-only controls. All other compound replicates, including DMSO/compound mixtures, remain strict; an infeasible retry is an error. Controls qualify by SRC Compound Name `DMSO` (case-insensitive) with no LIB `@` references. A LIB stock named DMSO is not exempt. The fallback preserves occupied wells, control counts, Layout boundaries and complete dose sets; no new flag is needed. Successful strict permutations are unchanged, and Assay does not automatically use this fallback.
+- Controls with actual dispenses participate in randomization. Give a control well a unique `Layout:` label when it must remain fixed; if that well is blacklisted, preserving the control is impossible and the run fails.
+- With blacklisting and randomization enabled, reserve healthy replacement wells for rejected controls within the original `Layout:` group before allocating complete library replicate/dose sets. Blank/absent layout labels form one pool. Remaining LIB rows continue onto subsequent destination plates, so provide enough barcodes. If no complete library set fits after reserving controls, the run fails.
+- Picklist targets, `table merge.txt`, `plate map compounds.txt`, `plate map concentrations.txt`, and the reformatted LIB export all use the randomized coordinates.
 
 In a helper JSON spec, a `slot_layout` may set `randomization_layout_mode` to `none`, `all`, `halves`, or `quadrants`. These presets split the full 16 × 24 canvas; use a custom map for 96-well half/quadrant boundaries. When a preset map is generated, `pin_controls_for_randomization` defaults to `true` and assigns every generated control well a unique layout label; set it to `false` only when controls should participate. A custom layout may instead provide `randomization_layout` (or `layout_map`) as a well-to-label mapping or 16 × 24 grid. Keep the separate `groups` field for `DST_Blacklist` movable positions.
 
@@ -250,6 +251,24 @@ The current Python Screen path removes zero-concentration label rows and does no
 Keep the first row as headers. Required fields depend on the `@` references used in `SRC`, but at minimum the library table needs source well, source plate barcode, and an identifier/name. Include stock or final concentration columns when the design references them.
 
 Shortlist by filtering the `LIB` table before writing the workbook. Do not mark unwanted library rows inside the sheet unless the Screen generator is known to ignore that marker; the Screen generator dispenses the rows present in `LIB`. Always sort the final shortlisted table by source plate barcode. Preserve any row order within a barcode if that order has operational meaning.
+
+Every successful Screen run also writes `<design stem>_reformatted_LIB.xlsx` beside the design. This workbook contains exactly one `LIB` sheet and expands each positive, rounded, LIB-linked dispense into one row. The columns referenced by `SRC` source-well and source-barcode `@` fields are replaced by the final destination well and barcode; their headers identify them as dispense destinations. `Dispense volume (nL)`, `Original source well`, and `Original source plate barcode` are appended, with the latter two preserving the resolved pre-dispense source coordinates. Replicates therefore duplicate a LIB row, and a combination produces one row per LIB-linked component. Explicit SRC controls and operational backfill do not receive synthetic rows because they have no originating LIB record. Use one consistent set of well and barcode `@` columns across LIB-linked SRC templates, plus one consistent stock mapping when backfill is active, so the export has an unambiguous schema.
+
+When backfill is active and `SRC` stock concentration uses an `@` reference, that LIB column becomes `Concentration after dispense`. For each exported component calculate `source stock × component rounded nL / total positive rounded nL delivered to that destination well`. The denominator includes all normal co-dispenses and operational backfill. Without active backfill, preserve the original stock-concentration value and header.
+
+### Screen source boundaries
+
+Use `--flush_dst_after_src [true|false]` or `--flush-dst-after-src [true|false]` when each destination must receive LIB compounds from only one original source barcode. Bare enables it; default/false retains overlapping sources. Screen compares resolved SRC barcodes in LIB row order, leaves the first row of the next group unconsumed, and restarts the destination template on a fresh barcode. Unused slots remain empty. A source can span multiple destinations; nonconsecutive A/B/A groups start separate destinations without sorting. Supply enough destination barcodes for partial plates.
+
+Fixed controls, backfill and intermediate sources do not trigger this boundary. It works with destination randomization and intermediate preparation; repeated-stock intermediate allocations and volume accounting persist across flushes. Existing blacklist behavior still applies. Combinations containing multiple LIB slots must fit wholly within one source group; a partial combination raises an error. Rerun generated intermediate designs with the same flag because it is a CLI/API setting, not a worksheet field. Python API: `generate_screening_picklist(..., flush_dst_after_src=True)`.
+
+### Screen intermediate dilutions
+
+Use `--intermediate_dilution [true|false]` or `--intermediate-dilution [true|false]` for native Screen preparation of diluted stocks; a bare option enables it and the default is disabled. In DST's Compounds column, `#1-dil33` requests a 33-fold dilution of the preceding `#1` base slot from the same original LIB row. Use original-stock LIB rows, without adding manual diluted pairs. Repeated original-stock rows are allowed and retain their destination requests: matching physical barcode/well, compound identifier, stock and factor reuse one intermediate well and one preparation across slots/plates. Exports track every contributing LIB worksheet row. Different dilution factors remain separate; conflicting identities or stocks for one physical well are errors. Multiple factors are independent preparations from the original stock, not a serial chain.
+
+Supply an `Intermediate_dilutions` worksheet with inventory/process/picklist names, one intermediate barcode, and a fixed 16 × 24 solvent-preload map in µL. Preparation and downstream doses share source accounting; actual stock after 2.5 nL rounding determines cell doses. Capacity and retained-volume failures are errors. The map is allocated in row-major order and is not randomized with cell destinations. Shared output names merge across source, destination and intermediate files; use distinct process names when the PlateWorks method uses separate aliases.
+
+Screen writes intermediate LIB and editable intermediate-design workbooks in addition to normal outputs, preserving the input workbook and original treatment identities. Rerun the generated design with the intermediate flag. See `references/picklipy_schema_and_design.md` for exact fields, defaults, dilution math and output semantics. The helper workbook builder does not substitute for running the production Screen implementation.
 
 ### Screen blacklisting
 
@@ -262,13 +281,13 @@ It contains:
 
 Group-map rules:
 
-- Empty group-map cell means fixed/unmovable. Use empty cells for controls and any positions that should be rejected rather than relocated.
+- Empty group-map cells are not replacement destinations when a non-empty group map is present. Controls may remain blank in this map: with randomization enabled their relocation is governed by `DST!Layout:`, not by membership in `Groups:`.
 - A non-empty group-map cell marks a movable/available blacklist position. The current shift-based Python path does not enforce different group-label text as separate relocation pools; use `Layout:` for randomization boundaries and validate blacklist compaction separately when regional isolation matters.
-- Label only the used area of the plate. Do not label controls unless you intentionally allow controls to be relocated.
-- If one library item appears in multiple wells, verify replicate/dose cardinality after blacklisting; current shift-based compaction can truncate a repeated group when surviving capacity cuts through it.
+- Label the library area and any intentionally available spare wells. Group labels on controls do not enable relocation when randomization is off; enable randomization and give controls a shared `Layout:` pool when replacement is wanted.
+- Without randomization, blacklisted controls are skipped and legacy compaction can truncate library replicate/dose sets. With randomization, control counts are preserved and complete compound sets (including connected combinations) are allocated within their original `Layout:` pools; omitted slots consume no LIB rows.
 - Blacklisted wells are marked as `rejected` in merge/map outputs.
 
-Blacklist removal/compaction is resolved before runtime randomization. Rejected physical coordinates stay rejected and are never remapped. `DST!Layout:` still enforces the subsequent randomization boundary, but the current shift-based blacklist path does not enforce distinct `Groups:` text as regional pools; validate or separate blacklist handling when that isolation is required.
+Blacklist allocation is resolved before runtime randomization. Rejected physical coordinates stay rejected and are never remapped. With randomization enabled, both blacklist allocation and subsequent randomization respect `DST!Layout:` boundaries. Distinct `Groups:` text does not define relocation pools; without randomization, legacy compaction still needs separate validation for regional isolation.
 
 Use the group map to mark positions available for blacklist compaction, leaving fixed controls blank. Encode left/right, cell-type, or other hard randomization boundaries in `DST!Layout:`; do not depend on distinct group-label text for that isolation in the current shift-based Python path.
 
@@ -279,7 +298,7 @@ Use the group map to mark positions available for blacklist compaction, leaving 
 - **Combinatorial matrix:** use one axis per perturbation and ensure the `Labels` table contains all component labels. For multi-compound dose-response combinatorics, use multiple Assay sections with the same picklist name.
 - **Library screen with controls:** reserve edge wells or regular sentinel wells for vehicle, positive, and negative controls. Thread library slots through the remaining wells in a deterministic order.
 - **Randomized library screen:** use a `Layout:` map for cell-type, batch, or plate-region boundaries. Reuse the same layout label throughout a region; use a unique label to pin a well. Replicate spacing is optimized only among wells in the same label pool.
-- **Two cell types on one plate:** split the map into halves or quadrants, duplicate each library slot once per region, and use matching DST `Layout:` labels for runtime randomization. The current blacklist compaction path does not preserve distinct `Groups:` text as regional boundaries, so validate or separate blacklist handling for this design.
+- **Two cell types on one plate:** split the map into halves or quadrants, duplicate each library slot once per region, and use matching DST `Layout:` labels. With randomization enabled, blacklist allocation preserves complete compound sets across these pools. Without randomization, validate or separate blacklist handling because distinct `Groups:` text does not enforce boundaries.
 - **QC blacklisting expected:** include spare movable wells and validate replicate/dose cardinality in the generated merge and plate-map outputs before dispensing.
 - **96-well destination plate:** use only the upper-left 8 × 12 coordinates. Do not accidentally populate rows I:P or columns 13:24.
 - **High-volume transfers:** recommend increasing stock concentration where feasible, using PP source plates when appropriate, or confirming that the generator/method can split transfers above the LDV single-dispense limit.

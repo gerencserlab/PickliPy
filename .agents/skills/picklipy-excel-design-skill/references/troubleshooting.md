@@ -94,6 +94,22 @@ Fix:
 - Increase vehicle source volume or add equivalent source wells with the same stock concentration.
 - Treat native backfill as operational: it is visible in the Echo picklist and source accounting, but intentionally absent from treatment merge/condition metadata.
 
+## Reformatted LIB rows or concentrations look unexpected
+
+Cause:
+
+- `SRC` source-well, stock, or barcode fields reference different LIB columns than expected.
+- A treatment is replicated or combined, so its original LIB row correctly appears more than once.
+- Explicit controls or native vehicle backfill were expected as rows, but they have no originating LIB record.
+- A backfilled daughter concentration was compared with the assay-final concentration instead of the concentration within the actual dispensed mixture.
+
+Fix:
+
+- Audit the `@Column` references in `SRC`; these determine which LIB columns are rewritten.
+- Match exported rows by `Original source well` and `Original source plate barcode`, then verify the final destination coordinates and `Dispense volume (nL)`.
+- For active backfill, calculate concentration as source stock multiplied by that component's rounded volume and divided by the total positive rounded volume delivered to the destination well.
+- Remember that blacklist removal and randomization are already reflected in the reformatted coordinates.
+
 ## Screen library dispenses wrong plate order
 
 Cause:
@@ -109,13 +125,14 @@ Fix:
 
 Cause:
 
-- Controls were left fixed/unmovable or the current generator does not relocate controls.
+- Randomization is off: the legacy path fixes controls to their original wells and skips blacklisted controls.
 
 Fix:
 
-- Prefer leaving controls fixed and accept rejected controls in the merge output.
-- Add redundant controls in multiple locations.
-- Only group controls if the method version and design intentionally support moving them.
+- Enable `--randomize-wells true` to preserve control counts by reserving healthy replacement wells before allocating complete library replicate/dose sets. More destination barcodes may be needed.
+- Replacement wells must be eligible in `Groups:` (or occupied plate-map wells if the group map is empty) and share the control's `DST!Layout:` label. Controls themselves may have blank group cells.
+- A uniquely pinned blacklisted control or insufficient capacity in its layout pool raises an error. The helper pins generated controls by default: set `pin_controls_for_randomization` to `false` or explicitly define suitable shared layout pools if controls may move.
+- If controls must remain fixed, leave randomization off and account for rejected controls or add redundancy.
 
 ## Blacklist relocation behaves unexpectedly
 
@@ -123,13 +140,14 @@ Cause:
 
 - The `Groups:` map does not label all intended movable library wells.
 - Controls were included in groups.
-- A repeated replicate/dose group was cut by the surviving well capacity.
+- With randomization off, a repeated replicate/dose group was cut by the surviving well capacity.
 
 Fix:
 
 - Rebuild the group map with only library wells in groups.
 - Validate output replicate/dose cardinality after compaction.
-- Do not rely on distinct `Groups:` text values for regional isolation in the current shift-based Python path; inspect the compacted output or separate the designs.
+- Distinct `Groups:` text values do not enforce regional isolation. With randomization enabled, blacklist allocation and randomization both respect `DST!Layout:` pools and preserve complete library sets. Without randomization, inspect the compacted output or separate the designs.
+- If no complete library set fits after preserving controls, adjust capacity/layout or remove that destination barcode from the run; the randomized path reports an error instead of consuming LIB rows without dispensing a complete set.
 
 ## Screen wells are not randomized
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import copy
 import math
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
@@ -293,11 +293,18 @@ def _write_reformatted_lib_workbook(
 
 def _print_banner() -> None:
     print(
+        "Picklist generator for acoustic dispensing using Beckman Coulter Echo 650 "
+        "controlled by Revvity PlateWorks. Written by Akos A. Gerencser."
+    )
+    
+    print(
         "\nPicklyPy.Screen (Python translation of screeningpicklist.wls v6.6 10/25/2025)\n"
         "Generates screening picklists for a generic destination layout, auto-filled\n"
         "from a multi-plate compound library (LIB worksheet).\n"
     )
-
+    print(
+        "Version 6.7 10/28/2026"
+    )
 
 def _matrix_nonempty_first_col(matrix: List[List[Any]]) -> List[List[Any]]:
     out: List[List[Any]] = []
@@ -347,7 +354,8 @@ def _load_design_sheets(xlsx_path: Path) -> Tuple[List[List[Any]], List[List[Any
         if "blacklist" in name_lower or "blk" in name_lower:
             ws_blk = wb[name]
             break
-    if ws_blk is None and len(wb.worksheets) > 3:
+    if (ws_blk is None and len(wb.worksheets) > 3
+            and not wb.worksheets[3].title.lower().startswith('intermediate')):
         ws_blk = wb.worksheets[3]
 
     if ws_dst is None or ws_lib is None:
@@ -717,10 +725,14 @@ def generate_screening_picklist(
     randomize_wells: bool = False,
     backfill_name: Optional[str] = None,
     backfill_volume: Optional[float] = None,
+    intermediate_dilution: bool = False,
+    flush_dst_after_src: bool = False,
 ) -> None:
     """Generate screening picklists and metadata files.
 
-    This function mirrors `screeningpicklist.wls` behavior.
+    This function mirrors `screeningpicklist.wls` behavior by default.
+    With flush_dst_after_src, each destination takes LIB rows from only one
+    resolved original source barcode; controls and intermediate sources are exempt.
     """
 
     xlsx_path = Path(xlsx_path)
@@ -731,8 +743,21 @@ def generate_screening_picklist(
 
     src, dst, lib, blk = _load_design_sheets(xlsx_path)
     header = _parse_header(dst, src)
+    intermediates = None
+    dilution_aliases: Dict[str, Tuple[str, float]] = {}
+    if intermediate_dilution:
+        from .intermediate import IntermediateDilutions, split_dilution
+
+        intermediates = IntermediateDilutions(xlsx_path, header.min_volume_ul)
+        if intermediates.barcode in header.barcodes_dst:
+            raise PicklyPyConfigError('Barcode_INT must differ from every final destination barcode.')
     backfill_override = normalize_backfill_override(backfill_name, backfill_volume)
     src_data_rows = src[1:] if len(src) > 1 else []
+    dmso_controls = {
+        as_str(row[1]) for row in src_data_rows
+        if len(row) > 1 and as_str(row[1]).casefold() == "dmso"
+        and not any("@" in as_str(value) for value in row)
+    }
     wildcard_reference_rows = [
         row for row in src_data_rows if len(row) > 1 and as_str(row[1]) == "*"
     ]
@@ -835,6 +860,12 @@ def generate_screening_picklist(
         len(lib[0]) if lib else 0,
         using_backfill=using_backfill,
     )
+    intermediate_lib_references = (
+        _common_lib_references(
+            reference_schema_rows, len(lib[0]) if lib else 0, using_backfill=True,
+        )
+        if intermediates is not None else None
+    )
     configured_backfill_compound = (
         backfill_override.compound_name
         if backfill_override is not None
@@ -893,8 +924,34 @@ def generate_screening_picklist(
         labels_data.append(row)
     labellists00[0] = labels_data
 
+    if intermediates is not None:
+        # The suffix is a source-stock alias, not another LIB slot. Validate
+        # precedence against the full definitions, including unused direct doses.
+        preceding = set()
+        for row in labels_data_raw:
+            compound = as_str(row[1])
+            alias = split_dilution(compound)
+            if alias is not None:
+                base, factor = alias
+                if base not in preceding:
+                    raise PicklyPyConfigError(
+                        f"Intermediate compound {compound!r} requires a preceding "
+                        f"base compound {base!r} in the DST Labels definitions."
+                    )
+                dilution_aliases[compound] = (base, factor)
+            else:
+                preceding.add(compound)
+
     if not labels_data:
         raise PicklyPyConfigError("DST 'Labels' list is empty.")
+
+    def base_compound(compound: str) -> str:
+        return dilution_aliases.get(compound, (compound, 1.0))[0]
+
+    allocation_labels_data = [
+        [row[0], base_compound(as_str(row[1])), *row[2:]]
+        for row in labels_data
+    ]
 
     # Blacklist parsing
     blacklist = _parse_blacklist(
@@ -993,12 +1050,18 @@ def generate_screening_picklist(
 
     # Helper to fill a SRC row from LIB using @Column references (addcompound)
     def addcompound(srcline: List[Any]) -> Optional[List[Any]]:
-        nonlocal lib_index
+        nonlocal lib_index, destination_library_barcode, source_boundary_reached
+
+        # Leave the first row of the next source group unconsumed. Explicit
+        # controls still belong on this destination even when listed last.
+        if source_boundary_reached and any("@" in as_str(value) for value in srcline):
+            return None
 
         # Randomized runs must still resolve explicit controls after the last
         # LIB-backed SRC row, including named templates with controls listed last.
         if lib_index >= len(lib) - 1 and (
-            not randomize_wells or any("@" in as_str(value) for value in srcline)
+            not (randomize_wells or intermediate_dilution or flush_dst_after_src)
+            or any("@" in as_str(value) for value in srcline)
         ):
             return None
 
@@ -1021,10 +1084,9 @@ def generate_screening_picklist(
                 col_letters = match.group(1)
                 if notyet:
                     notyet = False
-                    lib_index += 1
-                    if lib_index >= len(lib):
+                    if lib_index + 1 >= len(lib):
                         return ""
-                    lib_row_used = lib[lib_index]
+                    lib_row_used = lib[lib_index + 1]
                 assert lib_row_used is not None
                 col_idx_1b = excel_col_to_number(col_letters)
                 col_idx_0b = col_idx_1b - 1
@@ -1035,6 +1097,20 @@ def generate_screening_picklist(
             return re.sub(r"@([A-Za-z]+)", repl, s)
 
         new_row = [_sub_cell(v) for v in row]
+        if lib_row_used is not None:
+            if flush_dst_after_src:
+                barcode = as_str(new_row[5])
+                if barcode in ("", "*"):
+                    raise PicklyPyConfigError(
+                        "flush_dst_after_src requires a resolved source barcode "
+                        f"for LIB worksheet row {lib_index + 2}."
+                    )
+                if destination_library_barcode is None:
+                    destination_library_barcode = barcode
+                elif barcode != destination_library_barcode:
+                    source_boundary_reached = True
+                    return None
+            lib_index += 1
         # Only rows that actually dereferenced LIB receive LIB provenance.
         # Explicit controls otherwise inherit the running index and can be
         # mistaken for a library row on later destination plates.
@@ -1102,6 +1178,8 @@ def generate_screening_picklist(
     
 
     while lib_index < len(lib) - 1 or carry_forward_labels:
+        destination_library_barcode: Optional[str] = None
+        source_boundary_reached = False
         dst_count += 1
         if dst_count > len(header.barcodes_dst):
             raise PicklyPyConfigError(
@@ -1138,7 +1216,7 @@ def generate_screening_picklist(
                 valid_wells=valid_well_template,
                 blacklisted_wells=blacklisted_set,
                 layout_by_well=layout_by_well,
-                labels_data=labels_data,
+                labels_data=allocation_labels_data,
                 explicit_compounds=explicit_compounds,
                 barcode=barcode_dst,
             )
@@ -1193,7 +1271,7 @@ def generate_screening_picklist(
                 + ", ".join(missing_labels)
             )
 
-        compounds_used = [as_str(r[1]) for r in labels_data_used]
+        compounds_used = [base_compound(as_str(r[1])) for r in labels_data_used]
 
         # Expand SRC inventory for this destination plate
         src_rows = src[1:] if len(src) > 1 else []
@@ -1218,7 +1296,7 @@ def generate_screening_picklist(
             src2_seed = explicit_rows + blank_rows
         else:
             src2_seed = src_rows
-            if randomize_wells and blacklisted_set:
+            if flush_dst_after_src or intermediate_dilution or (randomize_wells and blacklisted_set):
                 # Named LIB-backed SRC templates, like wildcard expansions,
                 # must not consume a LIB row for a slot omitted by allocation.
                 src2_seed = [
@@ -1234,6 +1312,40 @@ def generate_screening_picklist(
             if filled is None:
                 continue
             src2.append(filled)
+
+        if source_boundary_reached:
+            # Restart the template for the next source, just as for a full
+            # destination. Never carry an old source's displaced slot labels.
+            carry_forward_labels = []
+
+        if flush_dst_after_src:
+            # A combined treatment cannot be split at a source boundary.
+            # Detect both multi-label cells and duplicate Labels-table entries
+            # before producing incomplete combinations or allocating dilutions.
+            library_slots = {
+                as_str(row[1]) for row in src2_seed
+                if any("@" in as_str(value) for value in row)
+            }
+            resolved_slots = {
+                as_str(row[1]) for row in src2
+                if isinstance(row[-1], int) and row[-1] > 0
+            }
+            slots_by_label: Dict[str, set] = {}
+            for label, compound, *_ in labels_data_used:
+                slot = base_compound(as_str(compound))
+                if slot in library_slots:
+                    slots_by_label.setdefault(as_str(label), set()).add(slot)
+            for well, label_cell in b_pairs:
+                required_slots = set().union(*(
+                    slots_by_label.get(label, set()) for label in split_labels(label_cell)
+                ))
+                if required_slots & resolved_slots and required_slots - resolved_slots:
+                    raise PicklyPyConfigError(
+                        f"flush_dst_after_src cannot fill the complete library combination "
+                        f"at {barcode_dst}:{well} from one source group. "
+                        "Keep all combined LIB slots in the same barcode group, "
+                        "use separate destination slots, or disable this option."
+                    )
 
         # Replace any "*" barcode in column 6 with the first non-* barcode in this src2 (Wolfram behavior)
         # Column indices: 0 well, 1 compound label, 2 stock, 3 identifier, 4 volume, 5 barcode, 6 newflag, 7? ...
@@ -1343,6 +1455,43 @@ def generate_screening_picklist(
                 msg_lines.append(f"  {plate} {well}: {a} vs {b}")
             raise PicklyPyConfigError("\n".join(msg_lines))
 
+        if intermediates is not None:
+            if intermediates.barcode in barcodes_src_ordered:
+                raise PicklyPyConfigError('Barcode_INT must differ from every original source barcode.')
+            # Survey replacement and original volume initialization have already
+            # happened. Synthetic intermediate wells must not be zeroed by an
+            # original-source survey, nor consume another original LIB row.
+            for compound in dict.fromkeys(as_str(row[1]) for row in labels_data_used):
+                if compound not in dilution_aliases:
+                    continue
+                base, factor = dilution_aliases[compound]
+                matches = [(plate, srcr[plate][base]) for plate in barcodes_src_ordered
+                           if base in srcr.get(plate, {})]
+                if not matches:
+                    # Unresolved slot on the final partial destination plate.
+                    continue
+                if len(matches) != 1:
+                    raise PicklyPyConfigError(
+                        f'Intermediate base {base!r} resolves to more than one source plate.'
+                    )
+                original_plate, (wells, stock, libi) = matches[0]
+                if libi <= 0:
+                    raise PicklyPyConfigError(
+                        f'Intermediate base {base!r} must resolve to a LIB-backed source.'
+                    )
+                allocation = intermediates.allocate(
+                    source_plate=original_plate, wells=wells, stock=stock,
+                    lib_index=libi, identifier=src_name[original_plate][wells[0]],
+                    factor=factor, volumes_ul=volumes_ul,
+                    source_minimum_ul=header.min_volume_ul,
+                )
+                srcr.setdefault(intermediates.barcode, {})[compound] = (
+                    [allocation.well], allocation.stock, libi,
+                )
+                src_name.setdefault(intermediates.barcode, {})[allocation.well] = allocation.identifier
+            if srcr.get(intermediates.barcode):
+                barcodes_src_ordered.append(intermediates.barcode)
+
         # If switching SRC plate barcode between destination plates, Plate:Works may need extra loop.
         if lastbarcode and barcodes_src_ordered and lastbarcode != barcodes_src_ordered[0]:
             loopdst.append(barcode_dst)
@@ -1424,6 +1573,11 @@ def generate_screening_picklist(
         c_pairs_use = c_pairs
         if randomize_wells:
             signature_parts_by_label: Dict[str, List[str]] = {}
+            adjacency_allowed_by_label: Dict[str, List[bool]] = {}
+            exempt_control_sources = {
+                (as_str(row[5]), as_str(row[0])) for row in src2
+                if row[-1] == 0 and as_str(row[1]) in dmso_controls
+            }
             for plate_i, plate in enumerate(barcodes_src_ordered):
                 for lab, (wells, _stock, _libi), final in labellists_by_src[plate_i]:
                     ident = src_name.get(plate, {}).get(wells[0], wells[0])
@@ -1432,24 +1586,62 @@ def generate_screening_picklist(
                     signature_parts_by_label.setdefault(lab, []).append(
                         f"{signature_ident}_{final_text}"
                     )
+                    adjacency_allowed_by_label.setdefault(lab, []).append(
+                        _libi == 0 and all((plate, well) in exempt_control_sources for well in wells)
+                    )
 
             treatment_by_well = _build_treatment_signatures_for_randomization(
                 plate_pairs=b_pairs,
                 signature_parts_by_label=signature_parts_by_label,
             )
-            seed = seed_from_text(f"{xlsx_path.name}|{barcode_dst}")
-            try:
-                well_map = optimize_plate_well_map(
-                    treatment_by_well=treatment_by_well,
-                    layout_by_well=layout_by_well if layout_by_well else None,
-                    seed=seed,
-                    attempts=100,
-                    forbid_adjacent_replicates=True,
+            # Exempt only treatments composed entirely of explicit DMSO
+            # controls. A compound mixed with DMSO remains strict, as does a
+            # LIB compound whose identifier happens to match a control name.
+            allowed_by_treatment: Dict[str, bool] = {}
+            for well, label_cell in b_pairs:
+                treatment = treatment_by_well.get(well)
+                if not treatment:
+                    continue
+                allowed_parts = [
+                    allowed for label in split_labels(label_cell)
+                    for allowed in adjacency_allowed_by_label.get(label, [])
+                ]
+                allowed_by_treatment[treatment] = (
+                    allowed_by_treatment.get(treatment, True)
+                    and bool(allowed_parts) and all(allowed_parts)
                 )
+            dmso_treatments = {
+                treatment for treatment, allowed in allowed_by_treatment.items() if allowed
+            }
+            seed = seed_from_text(f"{xlsx_path.name}|{barcode_dst}")
+            randomization_kwargs = dict(
+                treatment_by_well=treatment_by_well,
+                layout_by_well=layout_by_well if layout_by_well else None,
+                seed=seed,
+                attempts=100,
+                forbid_adjacent_replicates=True,
+            )
+            try:
+                well_map = optimize_plate_well_map(**randomization_kwargs)
             except ValueError as e:
-                raise PicklyPyConfigError(
-                    f"Well randomization failed for destination plate {barcode_dst}: {e}"
-                ) from e
+                if not dmso_treatments:
+                    raise PicklyPyConfigError(
+                        f"Well randomization failed for destination plate {barcode_dst}: {e}"
+                    ) from e
+                print(
+                    f"Warning: strict well randomization failed for destination plate {barcode_dst}: {e} "
+                    "Retrying with adjacent DMSO-only control wells allowed. "
+                    "Compound-replicate spacing, occupied wells and Layout groups remain unchanged."
+                )
+                try:
+                    well_map = optimize_plate_well_map(
+                        **randomization_kwargs, adjacency_exempt_treatments=dmso_treatments,
+                    )
+                except ValueError as fallback_error:
+                    raise PicklyPyConfigError(
+                        f"Well randomization failed for destination plate {barcode_dst} "
+                        f"even with adjacent DMSO controls allowed: {fallback_error}"
+                    ) from fallback_error
 
             c_pairs_use = [
                 (well_map.get(dstwell, dstwell), lab)
@@ -1486,6 +1678,7 @@ def generate_screening_picklist(
         ] = []
         normal_events_all: List[Tuple[str, List[str], float]] = []
         plate_reformatted_lib_dispenses: List[_ReformattedLibDispense] = []
+        provenance_by_event: Dict[Tuple[Any, ...], List[_ReformattedLibDispense]] = {}
         for plate_i, plate in enumerate(barcodes_src_ordered):
             label_defs = {}
             for lab, srcinfo, final in labellists_by_src[plate_i]:
@@ -1498,8 +1691,19 @@ def generate_screening_picklist(
                 if lab not in label_defs:
                     continue
                 for (wells, stock, libi), final in label_defs[lab]:
+                    if intermediates is not None and (
+                        not math.isfinite(stock) or stock <= 0
+                        or not math.isfinite(final) or final <= 0
+                    ):
+                        raise PicklyPyConfigError(
+                            f'Positive finite stock and final concentration required for {lab!r}.'
+                        )
                     desired_nl = 1000.0 * header.well_volume_ul * (final / stock)
                     vol_nl = _round_dispense_nl(desired_nl)
+                    if intermediates is not None and vol_nl <= 0:
+                        raise PicklyPyConfigError(
+                            f'Cell transfer for {lab!r} rounds to zero nL; change its stock or dose.'
+                        )
                     # Rounding warning (matches WL, uses Max[2.5, Round] in message)
                     if desired_nl != 0:
                         possible = max(2.5, _round_dispense_nl(desired_nl))
@@ -1527,6 +1731,10 @@ def generate_screening_picklist(
                                 source_well=wells[0],
                             )
                         )
+                        if intermediates is not None:
+                            provenance_by_event.setdefault(
+                                (plate, dstwell, tuple(wells), vol_nl), []
+                            ).append(plate_reformatted_lib_dispenses[-1])
 
                     # Merge table / plate map metadata uses first source well -> identifier
                     ident = src_name.get(plate, {}).get(wells[0], wells[0])
@@ -1623,7 +1831,8 @@ def generate_screening_picklist(
                 total_volume_nl_by_destination[key] = (
                     total_volume_nl_by_destination.get(key, 0.0) + volume_nl
                 )
-        reformatted_lib_dispenses.extend(plate_reformatted_lib_dispenses)
+        if intermediates is None:
+            reformatted_lib_dispenses.extend(plate_reformatted_lib_dispenses)
 
         # Generate metadata and picklist rows in the original source-plate order.
         for plate_i, plate in enumerate(barcodes_src_ordered):
@@ -1677,8 +1886,13 @@ def generate_screening_picklist(
             chosen_events: List[Tuple[str, str, float]] = []
             for dstwell, wells, vol in reordered_events:
                 chosen = None
+                minimum_volume_ul = (
+                    intermediates.minimum_volume_ul
+                    if intermediates is not None and plate == intermediates.barcode
+                    else header.min_volume_ul
+                )
                 for w in wells:
-                    if volumes_ul.get((plate, w), 0.0) >= header.min_volume_ul + vol / 1000.0:
+                    if volumes_ul.get((plate, w), 0.0) >= minimum_volume_ul + vol / 1000.0:
                         chosen = w
                         break
                 if chosen is None:
@@ -1686,6 +1900,10 @@ def generate_screening_picklist(
                     raise PicklyPyVolumeError(f"Error: Out of Volume for {ident0}")
                 volumes_ul[(plate, chosen)] = volumes_ul.get((plate, chosen), 0.0) - vol / 1000.0
                 chosen_events.append((dstwell, chosen, vol))
+                if intermediates is not None:
+                    provenance = provenance_by_event.get((plate, dstwell, tuple(wells), vol))
+                    if provenance:
+                        reformatted_lib_dispenses.append(replace(provenance.pop(0), source_well=chosen))
 
             # Group by chosen source well, preserve order
             per_well: Dict[str, List[Tuple[str, str, float]]] = {}
@@ -1701,7 +1919,17 @@ def generate_screening_picklist(
                 evs = per_well[w]
                 row = [plate, w, barcode_dst]
                 for dstwell, _w, vol in evs:
-                    row.extend([vol, dstwell])
+                    if intermediates is not None and plate == intermediates.barcode:
+                        # Account for the total once above, but emit acoustic
+                        # transfers within the configured per-transfer limit.
+                        units_left = int(round(vol / 2.5))
+                        max_units = int(math.floor(intermediates.maximum_transfer_nl / 2.5))
+                        while units_left:
+                            units = min(units_left, max_units)
+                            row.extend([units * 2.5, dstwell])
+                            units_left -= units
+                    else:
+                        row.extend([vol, dstwell])
                 csv_rows.append(row)
 
     # End main loop
@@ -1712,39 +1940,42 @@ def generate_screening_picklist(
     # Write outputs to the same folder as the design file.
     out_dir = xlsx_path.parent
 
-    picklist_path = out_dir / f"{header.picklist_name}.csv"
-    write_text(picklist_path, format_csv_rows(csv_rows))
-    print(f"Saving: {picklist_path}")
-
-    # Inventory
     src_unique = [b for b, _ in tally_ordered(loopsrc)]
     dst_unique = [b for b, _ in tally_ordered(loopdst)]
-
-    inv_src_rows = [make_inventory_row(b, header.inventory_src_rack, i + 1) for i, b in enumerate(src_unique)]
-    inv_dst_rows = [make_inventory_row(b, header.inventory_dst_rack, i + 1) for i, b in enumerate(dst_unique)]
-
-    inv_src_text = format_csv_rows(inv_src_rows)
-    inv_dst_text = format_csv_rows(inv_dst_rows)
-
-    if header.inventory_src_name == header.inventory_dst_name:
-        inv_path = out_dir / f"{header.inventory_src_name}.csv"
-        write_text(inv_path, inv_src_text + "\n" + inv_dst_text)
-        print(f"Saving: {inv_path}")
+    if intermediates is not None:
+        # A common path is written once: preparation before cell dosing for
+        # merged picklists; ordered union for shared inventories/process lists.
+        intermediates.write_outputs(
+            out_dir=out_dir, header=header, cell_rows=csv_rows,
+            src_unique=[b for b in src_unique if b != intermediates.barcode],
+            dst_unique=dst_unique, lib=lib, references=intermediate_lib_references,
+            volumes_ul=volumes_ul,
+        )
     else:
-        inv_path_src = out_dir / f"{header.inventory_src_name}.csv"
-        inv_path_dst = out_dir / f"{header.inventory_dst_name}.csv"
-        write_text(inv_path_src, inv_src_text)
-        write_text(inv_path_dst, inv_dst_text)
-        print(f"Saving: {inv_path_src}")
-        print(f"Saving: {inv_path_dst}")
-
-    # Process files
-    proc_src_path = out_dir / f"{header.process_src_name}.txt"
-    proc_dst_path = out_dir / f"{header.process_dst_name}.txt"
-    write_text(proc_src_path, "\n".join(src_unique))
-    write_text(proc_dst_path, "\n".join(dst_unique))
-    print(f"Saving: {proc_src_path}")
-    print(f"Saving: {proc_dst_path}")
+        picklist_path = out_dir / f"{header.picklist_name}.csv"
+        write_text(picklist_path, format_csv_rows(csv_rows))
+        print(f"Saving: {picklist_path}")
+        inv_src_rows = [make_inventory_row(b, header.inventory_src_rack, i + 1) for i, b in enumerate(src_unique)]
+        inv_dst_rows = [make_inventory_row(b, header.inventory_dst_rack, i + 1) for i, b in enumerate(dst_unique)]
+        inv_src_text = format_csv_rows(inv_src_rows)
+        inv_dst_text = format_csv_rows(inv_dst_rows)
+        if header.inventory_src_name == header.inventory_dst_name:
+            inv_path = out_dir / f"{header.inventory_src_name}.csv"
+            write_text(inv_path, inv_src_text + "\n" + inv_dst_text)
+            print(f"Saving: {inv_path}")
+        else:
+            inv_path_src = out_dir / f"{header.inventory_src_name}.csv"
+            inv_path_dst = out_dir / f"{header.inventory_dst_name}.csv"
+            write_text(inv_path_src, inv_src_text)
+            write_text(inv_path_dst, inv_dst_text)
+            print(f"Saving: {inv_path_src}")
+            print(f"Saving: {inv_path_dst}")
+        proc_src_path = out_dir / f"{header.process_src_name}.txt"
+        proc_dst_path = out_dir / f"{header.process_dst_name}.txt"
+        write_text(proc_src_path, "\n".join(src_unique))
+        write_text(proc_dst_path, "\n".join(dst_unique))
+        print(f"Saving: {proc_src_path}")
+        print(f"Saving: {proc_dst_path}")
 
     # Table merge
     merge_path = out_dir / "table merge.txt"
@@ -1811,7 +2042,13 @@ def generate_screening_picklist(
     # Summary
     print("\nRun complete.")
     print(f"CellPlateCount (destination plates): {len(dst_unique)}")
-    print(f"LibraryPlateCount (source plates): {len(src_unique)}")
+    if intermediates is not None:
+        original_count = len([barcode for barcode in src_unique if barcode != intermediates.barcode])
+        print(f"LibraryPlateCount (original source plates): {original_count}")
+        print("IntermediatePlateCount: 1")
+        print(f"IntermediateWellsPrepared: {len(intermediates.allocations)}")
+    else:
+        print(f"LibraryPlateCount (source plates): {len(src_unique)}")
     print(f"TotalDispenseEvents (plate switches): {len(loopdst)}")
 
     if warnings:
@@ -1832,7 +2069,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         if value in {"false", "f", "0", "no", "n"}:
             return False
         raise argparse.ArgumentTypeError(
-            "Expected a boolean value for --randomize-wells (true/false)."
+            "Expected a boolean value (true/false)."
         )
 
     parser = argparse.ArgumentParser(
@@ -1869,6 +2106,21 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         ),
     )
 
+    parser.add_argument(
+        "--intermediate_dilution", "--intermediate-dilution",
+        nargs="?", const=True, default=False, type=_str2bool,
+        metavar="{true|false}",
+        help=("Prepare -dilN compound aliases on one Intermediate_dilutions plate. "
+              "Bare flag means true; false preserves normal Screen behavior."),
+    )
+    parser.add_argument(
+        "--flush_dst_after_src", "--flush-dst-after-src",
+        nargs="?", const=True, default=False, type=_str2bool,
+        metavar="{true|false}",
+        help=("Start a new destination plate when the resolved LIB source barcode changes. "
+              "Controls and intermediate sources do not trigger a flush. "
+              "Bare flag means true; default false allows source overlap."),
+    )
     parser.add_argument(
         "--no-pause",
         action="store_true",
@@ -1921,6 +2173,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     generate_kwargs: Dict[str, Any] = {
         "randomize_wells": args.randomize_wells,
     }
+    if args.intermediate_dilution:
+        generate_kwargs['intermediate_dilution'] = True
+    if args.flush_dst_after_src:
+        generate_kwargs['flush_dst_after_src'] = True
     if args.backfill_name is not None or args.backfill_volume is not None:
         generate_kwargs["backfill_name"] = args.backfill_name
         generate_kwargs["backfill_volume"] = args.backfill_volume
